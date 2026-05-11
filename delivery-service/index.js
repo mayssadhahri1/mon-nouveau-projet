@@ -1,77 +1,48 @@
 const grpc = require("@grpc/grpc-js");
 const protoLoader = require("@grpc/proto-loader");
-const express = require("express");
+const path = require("path");
+const { Kafka } = require("kafkajs");
 
-const app = express();
-app.use(express.json()); // Indispensable pour lire le Body JSON de Postman
+// --- Configuration Kafka (Etape 4) ---
+const kafka = new Kafka({ clientId: 'delivery-service', brokers: ['localhost:9092'] });
+const consumer = kafka.consumer({ groupId: 'delivery-group' });
 
-// --- Configuration gRPC ---
-const PROTO_PATH = "../proto/delivery.proto";
-const packageDef = protoLoader.loadSync(PROTO_PATH, {
-    keepCase: true,
-    longs: String,
-    enums: String,
-    defaults: true,
-    oneofs: true
-});
-const grpcObject = grpc.loadPackageDefinition(packageDef);
-const deliveryPackage = grpcObject.delivery;
-
-// --- Simulation Base de Données (RxDB) ---
 let deliveries = [];
 let idCounter = 1;
 
-// ==========================================
-// 1. ROUTES HTTP (Pour Postman - Port 3000)
-// ==========================================
+// --- Chargement Proto ---
+const PROTO_PATH = path.join(__dirname, "../proto/delivery.proto");
+const packageDef = protoLoader.loadSync(PROTO_PATH, { keepCase: true });
+const deliveryPackage = grpc.loadPackageDefinition(packageDef).delivery;
 
-// POST http://localhost:3000/delivery
-app.post("/delivery", (req, res) => {
-    const { order_id, address } = req.body;
-    
-    if (!order_id || !address) {
-        return res.status(400).json({ error: "order_id et address sont requis" });
+// --- LOGIQUE KAFKA : Nour reçoit les messages de Mayssa ---
+async function runKafka() {
+    try {
+        await consumer.connect();
+        await consumer.subscribe({ topic: 'order-topic', fromBeginning: true });
+        await consumer.run({
+            eachMessage: async ({ message }) => {
+                const order = JSON.parse(message.value.toString());
+                console.log("📥 [Kafka] Nour a reçu la commande de Mayssa :", order.id);
+                
+                deliveries.push({
+                    id: "DEL-" + idCounter++,
+                    order_id: String(order.id),
+                    address: "Adresse via Kafka",
+                    status: "ready_for_pickup",
+                });
+            },
+        });
+    } catch (err) {
+        console.log("⚠️ Kafka n'est pas lancé, passage en mode gRPC seul.");
     }
+}
+runKafka();
 
-    const delivery = {
-        id: String(idCounter++),
-        order_id: String(order_id),
-        address,
-        status: "assigned",
-    };
-    
-    deliveries.push(delivery);
-    console.log("✅ [HTTP] Livraison créée:", delivery);
-    res.status(201).json(delivery);
-});
-
-// GET http://localhost:3000/delivery
-app.get("/delivery", (req, res) => {
-    console.log("✅ [HTTP] Récupération de toutes les livraisons");
-    res.json({ deliveries });
-});
-
-// Lancement Express
-const HTTP_PORT = 3000;
-app.listen(HTTP_PORT, () => {
-    console.log(`🚀 Serveur HTTP (Postman) : http://localhost:${HTTP_PORT}`);
-});
-
-
-// ==========================================
-// 2. LOGIQUE gRPC (Pour Microservices - Port 50052)
-// ==========================================
-
+// --- LOGIQUE gRPC ---
 function AssignDelivery(call, callback) {
-    const { order_id, address } = call.request;
-    const delivery = {
-        id: String(idCounter++),
-        order_id,
-        address,
-        status: "assigned",
-    };
+    const delivery = { id: "DEL-" + idCounter++, ...call.request, status: "assigned" };
     deliveries.push(delivery);
-    console.log("📦 [gRPC] Delivery assigned:", delivery);
     callback(null, delivery);
 }
 
@@ -79,24 +50,8 @@ function GetDeliveries(call, callback) {
     callback(null, { deliveries });
 }
 
-// Initialisation du serveur gRPC
-const gRPC_PORT = "50052";
 const server = new grpc.Server();
-
-server.addService(deliveryPackage.DeliveryService.service, {
-    AssignDelivery,
-    GetDeliveries,
-    // Ajoutez les autres fonctions ici (GetDelivery, UpdateDeliveryStatus)
+server.addService(deliveryPackage.DeliveryService.service, { AssignDelivery, GetDeliveries });
+server.bindAsync("0.0.0.0:50052", grpc.ServerCredentials.createInsecure(), () => {
+    console.log("🚚 Delivery Service (Nour) prêt sur le port 50052");
 });
-
-server.bindAsync(
-    `0.0.0.0:${gRPC_PORT}`,
-    grpc.ServerCredentials.createInsecure(),
-    (err, port) => {
-        if (err) {
-            console.error(err);
-            return;
-        }
-        console.log(`🚚 Service gRPC en cours sur le port ${port}`);
-    }
-);
