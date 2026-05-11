@@ -1,5 +1,4 @@
 const express = require("express");
-const bodyParser = require("body-parser");
 const grpc = require("@grpc/grpc-js");
 const protoLoader = require("@grpc/proto-loader");
 const { ApolloServer, gql } = require("apollo-server-express");
@@ -7,7 +6,11 @@ const { ApolloServer, gql } = require("apollo-server-express");
 const app = express();
 const PORT = 3000;
 
-app.use(bodyParser.json());
+// ✅ PAS de body-parser global — conflit avec Apollo
+app.use((req, res, next) => {
+    if (req.path === "/graphql") return next();
+    express.json()(req, res, next);
+});
 
 // ========================
 // gRPC — connexion order-service
@@ -24,8 +27,6 @@ const orderClient = new orderPackage.OrderService(
 // ========================
 // REST API
 // ========================
-
-// POST /orders → créer une commande
 app.post("/orders", (req, res) => {
     const { product, quantity } = req.body;
     orderClient.CreateOrder({ product, quantity }, (err, response) => {
@@ -34,7 +35,6 @@ app.post("/orders", (req, res) => {
     });
 });
 
-// GET /orders → voir toutes les commandes
 app.get("/orders", (req, res) => {
     orderClient.GetOrders({}, (err, response) => {
         if (err) return res.status(500).json({ error: err.message });
@@ -42,7 +42,6 @@ app.get("/orders", (req, res) => {
     });
 });
 
-// GET /orders/:id → voir une commande
 app.get("/orders/:id", (req, res) => {
     orderClient.GetOrder({ id: parseInt(req.params.id) }, (err, response) => {
         if (err) return res.status(500).json({ error: err.message });
@@ -50,7 +49,6 @@ app.get("/orders/:id", (req, res) => {
     });
 });
 
-// PUT /orders/:id → modifier une commande
 app.put("/orders/:id", (req, res) => {
     const { status } = req.body;
     orderClient.UpdateOrder(
@@ -62,7 +60,6 @@ app.put("/orders/:id", (req, res) => {
     );
 });
 
-// DELETE /orders/:id → supprimer une commande
 app.delete("/orders/:id", (req, res) => {
     orderClient.DeleteOrder({ id: parseInt(req.params.id) }, (err, response) => {
         if (err) return res.status(500).json({ error: err.message });
