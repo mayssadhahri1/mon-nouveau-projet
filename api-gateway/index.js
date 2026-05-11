@@ -15,9 +15,9 @@ app.use((req, res, next) => {
 // ========================
 // gRPC — connexion order-service
 // ========================
-const packageDef = protoLoader.loadSync("../proto/order.proto");
-const grpcObject = grpc.loadPackageDefinition(packageDef);
-const orderPackage = grpcObject.order;
+const packageDefOrder = protoLoader.loadSync("../proto/order.proto");
+const grpcObjectOrder = grpc.loadPackageDefinition(packageDefOrder);
+const orderPackage = grpcObjectOrder.order;
 
 const orderClient = new orderPackage.OrderService(
     "localhost:50051",
@@ -25,8 +25,34 @@ const orderClient = new orderPackage.OrderService(
 );
 
 // ========================
-// REST API
+// gRPC — connexion delivery-service
 // ========================
+const packageDefDelivery = protoLoader.loadSync("../proto/delivery.proto");
+const grpcObjectDelivery = grpc.loadPackageDefinition(packageDefDelivery);
+const deliveryPackage = grpcObjectDelivery.delivery;
+
+const deliveryClient = new deliveryPackage.DeliveryService(
+    "localhost:50052",
+    grpc.credentials.createInsecure()
+);
+
+// ========================
+// gRPC — connexion tracking-service
+// ========================
+const packageDefTracking = protoLoader.loadSync("../proto/tracking.proto");
+const grpcObjectTracking = grpc.loadPackageDefinition(packageDefTracking);
+const trackingPackage = grpcObjectTracking.tracking;
+
+const trackingClient = new trackingPackage.TrackingService(
+    "localhost:50053",
+    grpc.credentials.createInsecure()
+);
+
+// ========================
+// REST — Orders
+// ========================
+
+// POST /orders → créer une commande
 app.post("/orders", (req, res) => {
     const { product, quantity } = req.body;
     orderClient.CreateOrder({ product, quantity }, (err, response) => {
@@ -35,6 +61,7 @@ app.post("/orders", (req, res) => {
     });
 });
 
+// GET /orders → voir toutes les commandes
 app.get("/orders", (req, res) => {
     orderClient.GetOrders({}, (err, response) => {
         if (err) return res.status(500).json({ error: err.message });
@@ -42,6 +69,7 @@ app.get("/orders", (req, res) => {
     });
 });
 
+// GET /orders/:id → voir une commande
 app.get("/orders/:id", (req, res) => {
     orderClient.GetOrder({ id: parseInt(req.params.id) }, (err, response) => {
         if (err) return res.status(500).json({ error: err.message });
@@ -49,6 +77,7 @@ app.get("/orders/:id", (req, res) => {
     });
 });
 
+// PUT /orders/:id → modifier une commande
 app.put("/orders/:id", (req, res) => {
     const { status } = req.body;
     orderClient.UpdateOrder(
@@ -60,11 +89,86 @@ app.put("/orders/:id", (req, res) => {
     );
 });
 
+// DELETE /orders/:id → supprimer une commande
 app.delete("/orders/:id", (req, res) => {
     orderClient.DeleteOrder({ id: parseInt(req.params.id) }, (err, response) => {
         if (err) return res.status(500).json({ error: err.message });
         res.json(response);
     });
+});
+
+// ========================
+// REST — Delivery
+// ========================
+
+// POST /delivery → assigner une livraison
+app.post("/delivery", (req, res) => {
+    const { order_id, address } = req.body;
+    deliveryClient.AssignDelivery({ order_id, address }, (err, response) => {
+        if (err) return res.status(500).json({ error: err.message });
+        res.json(response);
+    });
+});
+
+// GET /delivery → voir toutes les livraisons
+app.get("/delivery", (req, res) => {
+    deliveryClient.GetDeliveries({}, (err, response) => {
+        if (err) return res.status(500).json({ error: err.message });
+        res.json(response.deliveries);
+    });
+});
+
+// GET /delivery/:id → voir une livraison
+app.get("/delivery/:id", (req, res) => {
+    deliveryClient.GetDelivery({ id: req.params.id }, (err, response) => {
+        if (err) return res.status(500).json({ error: err.message });
+        res.json(response);
+    });
+});
+
+// PUT /delivery/:id → modifier le statut
+app.put("/delivery/:id", (req, res) => {
+    const { status } = req.body;
+    deliveryClient.UpdateDeliveryStatus(
+        { id: req.params.id, status },
+        (err, response) => {
+            if (err) return res.status(500).json({ error: err.message });
+            res.json(response);
+        }
+    );
+});
+
+// ========================
+// REST — Tracking
+// ========================
+
+// POST /track → suivre une commande
+app.post("/track", (req, res) => {
+    const { order_id } = req.body;
+    trackingClient.TrackOrder({ order_id }, (err, response) => {
+        if (err) return res.status(500).json({ error: err.message });
+        res.json(response);
+    });
+});
+
+// GET /track → voir tous les suivis
+app.get("/track", (req, res) => {
+    trackingClient.GetAllTracks({}, (err, response) => {
+        if (err) return res.status(500).json({ error: err.message });
+        res.json(response.tracks);
+    });
+});
+
+// PUT /track/:id → mettre à jour la position
+app.put("/track/:id", (req, res) => {
+    const { location, status } = req.body;
+    trackingClient.UpdateLocation(
+        { id: req.params.id, location, status },
+        (err, response) => {
+            if (err) return res.status(500).json({ error: err.message });
+            res.json(response);
+        }
+    );
 });
 
 // ========================
@@ -78,18 +182,38 @@ const typeDefs = gql`
         status: String
     }
 
+    type Delivery {
+        id: String
+        order_id: Int
+        address: String
+        status: String
+    }
+
+    type Track {
+        id: String
+        order_id: Int
+        location: String
+        status: String
+    }
+
     type Query {
         getOrder(id: Int!): Order
         getOrders: [Order]
+        getDelivery(id: String!): Delivery
+        getDeliveries: [Delivery]
+        getAllTracks: [Track]
     }
 
     type Mutation {
         createOrder(product: String!, quantity: Int!): Order
+        assignDelivery(order_id: Int!, address: String!): Delivery
+        trackOrder(order_id: Int!): Track
     }
 `;
 
 const resolvers = {
     Query: {
+        // Orders
         getOrder: (_, { id }) =>
             new Promise((resolve, reject) => {
                 orderClient.GetOrder({ id }, (err, response) => {
@@ -104,11 +228,56 @@ const resolvers = {
                     else resolve(response.orders);
                 });
             }),
+
+        // Delivery
+        getDelivery: (_, { id }) =>
+            new Promise((resolve, reject) => {
+                deliveryClient.GetDelivery({ id }, (err, response) => {
+                    if (err) reject(err);
+                    else resolve(response);
+                });
+            }),
+        getDeliveries: () =>
+            new Promise((resolve, reject) => {
+                deliveryClient.GetDeliveries({}, (err, response) => {
+                    if (err) reject(err);
+                    else resolve(response.deliveries);
+                });
+            }),
+
+        // Tracking
+        getAllTracks: () =>
+            new Promise((resolve, reject) => {
+                trackingClient.GetAllTracks({}, (err, response) => {
+                    if (err) reject(err);
+                    else resolve(response.tracks);
+                });
+            }),
     },
+
     Mutation: {
+        // Orders
         createOrder: (_, { product, quantity }) =>
             new Promise((resolve, reject) => {
                 orderClient.CreateOrder({ product, quantity }, (err, response) => {
+                    if (err) reject(err);
+                    else resolve(response);
+                });
+            }),
+
+        // Delivery
+        assignDelivery: (_, { order_id, address }) =>
+            new Promise((resolve, reject) => {
+                deliveryClient.AssignDelivery({ order_id, address }, (err, response) => {
+                    if (err) reject(err);
+                    else resolve(response);
+                });
+            }),
+
+        // Tracking
+        trackOrder: (_, { order_id }) =>
+            new Promise((resolve, reject) => {
+                trackingClient.TrackOrder({ order_id }, (err, response) => {
                     if (err) reject(err);
                     else resolve(response);
                 });
