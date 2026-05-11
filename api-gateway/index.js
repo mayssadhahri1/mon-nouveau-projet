@@ -6,24 +6,40 @@ const { ApolloServer, gql } = require("apollo-server-express");
 const app = express();
 const PORT = 3000;
 
-// ✅ PAS de body-parser global — conflit avec Apollo
+// Options communes pour le chargement des protos
+const protoOptions = {
+    keepCase: true,
+    longs: String,
+    enums: String,
+    defaults: true,
+    oneofs: true
+};
+
+// Middleware pour gérer le JSON sans casser le playground GraphQL
 app.use((req, res, next) => {
     if (req.path === "/graphql") return next();
     express.json()(req, res, next);
 });
 
+<<<<<<< HEAD
 // ========================
 // gRPC — connexion order-service
 // ========================
 const packageDefOrder = protoLoader.loadSync("../proto/order.proto");
 const grpcObjectOrder = grpc.loadPackageDefinition(packageDefOrder);
 const orderPackage = grpcObjectOrder.order;
+=======
+// ==========================================
+// Connexions gRPC (Clients)
+// ==========================================
+>>>>>>> mayssa
 
-const orderClient = new orderPackage.OrderService(
-    "localhost:50051",
-    grpc.credentials.createInsecure()
+const orderProto = protoLoader.loadSync("../proto/order.proto", protoOptions);
+const orderClient = new (grpc.loadPackageDefinition(orderProto).order.OrderService)(
+    "localhost:50051", grpc.credentials.createInsecure()
 );
 
+<<<<<<< HEAD
 // ========================
 // gRPC — connexion delivery-service
 // ========================
@@ -53,9 +69,26 @@ const trackingClient = new trackingPackage.TrackingService(
 // ========================
 
 // POST /orders → créer une commande
+=======
+const deliveryProto = protoLoader.loadSync("../proto/delivery.proto", protoOptions);
+const deliveryClient = new (grpc.loadPackageDefinition(deliveryProto).delivery.DeliveryService)(
+    "localhost:50052", grpc.credentials.createInsecure()
+);
+
+const trackingProto = protoLoader.loadSync("../proto/tracking.proto", protoOptions);
+const trackingClient = new (grpc.loadPackageDefinition(trackingProto).tracking.TrackingService)(
+    "localhost:50053", grpc.credentials.createInsecure()
+);
+
+// ==========================================
+// ROUTES REST (Pour Postman)
+// ==========================================
+
+// --- Orders ---
+>>>>>>> mayssa
 app.post("/orders", (req, res) => {
     const { product, quantity } = req.body;
-    orderClient.CreateOrder({ product, quantity }, (err, response) => {
+    orderClient.CreateOrder({ product, quantity: parseInt(quantity) }, (err, response) => {
         if (err) return res.status(500).json({ error: err.message });
         res.json(response);
     });
@@ -65,7 +98,7 @@ app.post("/orders", (req, res) => {
 app.get("/orders", (req, res) => {
     orderClient.GetOrders({}, (err, response) => {
         if (err) return res.status(500).json({ error: err.message });
-        res.json(response.orders);
+        res.json(response.orders || []);
     });
 });
 
@@ -77,6 +110,7 @@ app.get("/orders/:id", (req, res) => {
     });
 });
 
+<<<<<<< HEAD
 // PUT /orders/:id → modifier une commande
 app.put("/orders/:id", (req, res) => {
     const { status } = req.body;
@@ -92,11 +126,18 @@ app.put("/orders/:id", (req, res) => {
 // DELETE /orders/:id → supprimer une commande
 app.delete("/orders/:id", (req, res) => {
     orderClient.DeleteOrder({ id: parseInt(req.params.id) }, (err, response) => {
+=======
+// --- Delivery ---
+app.post("/delivery", (req, res) => {
+    const { order_id, address } = req.body;
+    deliveryClient.AssignDelivery({ order_id: parseInt(order_id), address }, (err, response) => {
+>>>>>>> mayssa
         if (err) return res.status(500).json({ error: err.message });
         res.json(response);
     });
 });
 
+<<<<<<< HEAD
 // ========================
 // REST — Delivery
 // ========================
@@ -146,11 +187,25 @@ app.put("/delivery/:id", (req, res) => {
 app.post("/track", (req, res) => {
     const { order_id } = req.body;
     trackingClient.TrackOrder({ order_id }, (err, response) => {
+=======
+app.get("/delivery", (req, res) => {
+    deliveryClient.GetDeliveries({}, (err, response) => {
+        if (err) return res.status(500).json({ error: err.message });
+        res.json(response.deliveries || []);
+    });
+});
+
+// --- Tracking ---
+app.post("/track", (req, res) => {
+    const { order_id } = req.body;
+    trackingClient.TrackOrder({ order_id: parseInt(order_id) }, (err, response) => {
+>>>>>>> mayssa
         if (err) return res.status(500).json({ error: err.message });
         res.json(response);
     });
 });
 
+<<<<<<< HEAD
 // GET /track → voir tous les suivis
 app.get("/track", (req, res) => {
     trackingClient.GetAllTracks({}, (err, response) => {
@@ -174,13 +229,23 @@ app.put("/track/:id", (req, res) => {
 // ========================
 // GRAPHQL
 // ========================
+=======
+app.get("/track", (req, res) => {
+    trackingClient.GetAllTracks({}, (err, response) => {
+        if (err) return res.status(500).json({ error: err.message });
+        res.json(response.tracks || []);
+    });
+});
+
+// ==========================================
+// GRAPHQL (Schéma et Resolvers)
+// ==========================================
+
+>>>>>>> mayssa
 const typeDefs = gql`
-    type Order {
-        id: Int
-        product: String
-        quantity: Int
-        status: String
-    }
+    type Order { id: Int, product: String, quantity: Int, status: String }
+    type Delivery { id: String, order_id: Int, address: String, status: String }
+    type Track { id: String, order_id: Int, location: String, status: String }
 
     type Delivery {
         id: String
@@ -213,6 +278,7 @@ const typeDefs = gql`
 
 const resolvers = {
     Query: {
+<<<<<<< HEAD
         // Orders
         getOrder: (_, { id }) =>
             new Promise((resolve, reject) => {
@@ -253,9 +319,22 @@ const resolvers = {
                     else resolve(response.tracks);
                 });
             }),
+=======
+        getOrder: (_, { id }) => new Promise((res, rej) => 
+            orderClient.GetOrder({ id }, (err, d) => err ? rej(err) : res(d))),
+        getOrders: () => new Promise((res, rej) => 
+            orderClient.GetOrders({}, (err, d) => err ? rej(err) : res(d.orders))),
+        getDelivery: (_, { id }) => new Promise((res, rej) => 
+            deliveryClient.GetDelivery({ id }, (err, d) => err ? rej(err) : res(d))),
+        getDeliveries: () => new Promise((res, rej) => 
+            deliveryClient.GetDeliveries({}, (err, d) => err ? rej(err) : res(d.deliveries))),
+        getAllTracks: () => new Promise((res, rej) => 
+            trackingClient.GetAllTracks({}, (err, d) => err ? rej(err) : res(d.tracks)))
+>>>>>>> mayssa
     },
 
     Mutation: {
+<<<<<<< HEAD
         // Orders
         createOrder: (_, { product, quantity }) =>
             new Promise((resolve, reject) => {
@@ -283,17 +362,27 @@ const resolvers = {
                 });
             }),
     },
+=======
+        createOrder: (_, { product, quantity }) => new Promise((res, rej) => 
+            orderClient.CreateOrder({ product, quantity }, (err, d) => err ? rej(err) : res(d))),
+        assignDelivery: (_, { order_id, address }) => new Promise((res, rej) => 
+            deliveryClient.AssignDelivery({ order_id, address }, (err, d) => err ? rej(err) : res(d))),
+        trackOrder: (_, { order_id }) => new Promise((res, rej) => 
+            trackingClient.TrackOrder({ order_id }, (err, d) => err ? rej(err) : res(d)))
+    }
+>>>>>>> mayssa
 };
 
+// Lancement global
 async function startServer() {
     const server = new ApolloServer({ typeDefs, resolvers });
     await server.start();
     server.applyMiddleware({ app });
 
     app.listen(PORT, () => {
-        console.log(`🚀 API Gateway running on http://localhost:${PORT}`);
-        console.log(`🟣 GraphQL ready at http://localhost:${PORT}/graphql`);
+        console.log(`✅ Gateway REST: http://localhost:${PORT}`);
+        console.log(`🟣 Gateway GraphQL: http://localhost:${PORT}/graphql`);
     });
 }
 
-startServer();
+startServer().catch(err => console.error("Erreur au démarrage :", err));
