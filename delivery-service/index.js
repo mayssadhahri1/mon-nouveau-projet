@@ -1,17 +1,67 @@
 const grpc = require("@grpc/grpc-js");
 const protoLoader = require("@grpc/proto-loader");
+const express = require("express");
 
-// Simulation RxDB avec un tableau en mémoire
-let deliveries = [];
-let idCounter = 1;
+const app = express();
+app.use(express.json()); // Indispensable pour lire le Body JSON de Postman
 
-const packageDef = protoLoader.loadSync("../proto/delivery.proto");
+// --- Configuration gRPC ---
+const PROTO_PATH = "../proto/delivery.proto";
+const packageDef = protoLoader.loadSync(PROTO_PATH, {
+    keepCase: true,
+    longs: String,
+    enums: String,
+    defaults: true,
+    oneofs: true
+});
 const grpcObject = grpc.loadPackageDefinition(packageDef);
 const deliveryPackage = grpcObject.delivery;
 
-// ========================
-// Implémentation gRPC
-// ========================
+// --- Simulation Base de Données (RxDB) ---
+let deliveries = [];
+let idCounter = 1;
+
+// ==========================================
+// 1. ROUTES HTTP (Pour Postman - Port 3000)
+// ==========================================
+
+// POST http://localhost:3000/delivery
+app.post("/delivery", (req, res) => {
+    const { order_id, address } = req.body;
+    
+    if (!order_id || !address) {
+        return res.status(400).json({ error: "order_id et address sont requis" });
+    }
+
+    const delivery = {
+        id: String(idCounter++),
+        order_id: String(order_id),
+        address,
+        status: "assigned",
+    };
+    
+    deliveries.push(delivery);
+    console.log("✅ [HTTP] Livraison créée:", delivery);
+    res.status(201).json(delivery);
+});
+
+// GET http://localhost:3000/delivery
+app.get("/delivery", (req, res) => {
+    console.log("✅ [HTTP] Récupération de toutes les livraisons");
+    res.json({ deliveries });
+});
+
+// Lancement Express
+const HTTP_PORT = 3000;
+app.listen(HTTP_PORT, () => {
+    console.log(`🚀 Serveur HTTP (Postman) : http://localhost:${HTTP_PORT}`);
+});
+
+
+// ==========================================
+// 2. LOGIQUE gRPC (Pour Microservices - Port 50052)
+// ==========================================
+
 function AssignDelivery(call, callback) {
     const { order_id, address } = call.request;
     const delivery = {
@@ -21,17 +71,7 @@ function AssignDelivery(call, callback) {
         status: "assigned",
     };
     deliveries.push(delivery);
-    console.log("Delivery assigned:", delivery);
-    callback(null, delivery);
-}
-
-function GetDelivery(call, callback) {
-    const delivery = deliveries.find((d) => d.id === call.request.id);
-    if (!delivery)
-        return callback({
-            code: grpc.status.NOT_FOUND,
-            message: "Delivery not found",
-        });
+    console.log("📦 [gRPC] Delivery assigned:", delivery);
     callback(null, delivery);
 }
 
@@ -39,33 +79,24 @@ function GetDeliveries(call, callback) {
     callback(null, { deliveries });
 }
 
-function UpdateDeliveryStatus(call, callback) {
-    const { id, status } = call.request;
-    const delivery = deliveries.find((d) => d.id === id);
-    if (!delivery)
-        return callback({
-            code: grpc.status.NOT_FOUND,
-            message: "Delivery not found",
-        });
-    delivery.status = status;
-    callback(null, delivery);
-}
-
-// ========================
-// Démarrer le serveur gRPC
-// ========================
+// Initialisation du serveur gRPC
+const gRPC_PORT = "50052";
 const server = new grpc.Server();
+
 server.addService(deliveryPackage.DeliveryService.service, {
     AssignDelivery,
-    GetDelivery,
     GetDeliveries,
-    UpdateDeliveryStatus,
+    // Ajoutez les autres fonctions ici (GetDelivery, UpdateDeliveryStatus)
 });
 
 server.bindAsync(
-    "0.0.0.0:50052",
+    `0.0.0.0:${gRPC_PORT}`,
     grpc.ServerCredentials.createInsecure(),
-    () => {
-        console.log("🚚 Delivery Service running on port 50052");
+    (err, port) => {
+        if (err) {
+            console.error(err);
+            return;
+        }
+        console.log(`🚚 Service gRPC en cours sur le port ${port}`);
     }
 );
