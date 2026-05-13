@@ -1,0 +1,32 @@
+syntax = "proto3";
+
+package tracking;
+
+service TrackingService {
+    rpc TrackOrder (TrackRequest) returns (TrackResponse);
+    rpc GetAllTracks (Empty) returns (TrackList);
+    rpc UpdateLocation (UpdateLocationRequest) returns (TrackResponse);
+}
+
+message TrackRequest {
+    int32 order_id = 1;
+}
+
+message TrackResponse {
+    string id = 1;
+    int32 order_id = 2;
+    string location = 3;
+    string status = 4;
+}
+
+message TrackList {
+    repeated TrackResponse tracks = 1;
+}
+
+message UpdateLocationRequest {
+    string id = 1;
+    string location = 2;
+    string status = 3;
+}
+
+message Empty {}
