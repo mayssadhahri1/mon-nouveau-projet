@@ -1,32 +1,82 @@
+// ============================================================
+// TRACKING.PROTO — Contrat de communication du service suivi
+//
+// Ce fichier définit tout ce que le Tracking Service
+// sait faire : créer un suivi, voir tous les suivis,
+// et mettre à jour la position d'un colis.
+//
+// C'est le proto le plus simple des trois :
+// seulement 3 fonctions, pas de suppression, pas de Kafka.
+// ============================================================
+
+// Version 3 de Protocol Buffers
 syntax = "proto3";
 
+// Le nom du package = l'espace de noms de ce service
+// Dans le code JS on y accède avec : grpc.loadPackageDefinition(...).tracking
 package tracking;
 
+
+// ========================
+// SERVICE — Les fonctions disponibles
+// rpc = appel d'une fonction sur un autre serveur
+// Syntaxe : rpc NomFonction (CeQuOnEnvoie) returns (CeQuOnReçoit)
+// ========================
+
 service TrackingService {
+
+    // Démarrer le suivi d'une commande
+    // Envoie : TrackRequest (juste le numéro de commande)
+    // Reçoit : TrackResponse (le suivi créé, positionné à "Entrepôt central")
     rpc TrackOrder (TrackRequest) returns (TrackResponse);
+
+    // Voir tous les suivis existants
+    // Envoie : Empty (rien du tout)
+    // Reçoit : TrackList (un tableau de tous les suivis)
     rpc GetAllTracks (Empty) returns (TrackList);
+
+    // Mettre à jour la position et le statut d'un colis
+    // Envoie : UpdateLocationRequest (id du suivi + nouvelle position + nouveau statut)
+    // Reçoit : TrackResponse (le suivi mis à jour)
     rpc UpdateLocation (UpdateLocationRequest) returns (TrackResponse);
 }
 
+
+// ========================
+// MESSAGES — Les structures de données échangées
+// Chaque "message" = un objet avec ses champs
+// Le numéro après "=" = position du champ dans le binaire (usage interne)
+// Les types : string = texte, int32 = nombre entier
+// ========================
+
+// Données envoyées pour DÉMARRER un suivi
+// On n'a besoin que du numéro de commande, le reste est géré automatiquement
 message TrackRequest {
-    int32 order_id = 1;
+    int32 order_id = 1;  // numéro de la commande à suivre (ex: 42)
 }
 
+// Données renvoyées quand on retourne UN suivi
+// C'est la forme complète d'un suivi de colis
 message TrackResponse {
-    string id = 1;
-    int32 order_id = 2;
-    string location = 3;
-    string status = 4;
+    string id       = 1;  // identifiant unique du suivi (ex: "TRK-3")
+    int32  order_id = 2;  // numéro de la commande liée
+    string location = 3;  // position actuelle du colis (ex: "Lyon", "Entrepôt central")
+    string status   = 4;  // statut actuel (ex: "en cours", "livré")
 }
 
+// Données renvoyées quand on retourne TOUS les suivis
+// "repeated" = c'est un tableau (0, 1 ou plusieurs éléments)
 message TrackList {
-    repeated TrackResponse tracks = 1;
+    repeated TrackResponse tracks = 1;  // tableau de tous les suivis
 }
 
+// Données envoyées pour METTRE À JOUR la position d'un colis
 message UpdateLocationRequest {
-    string id = 1;
-    string location = 2;
-    string status = 3;
+    string id       = 1;  // identifiant du suivi à modifier (ex: "TRK-3")
+    string location = 2;  // nouvelle position (ex: "Marseille")
+    string status   = 3;  // nouveau statut (ex: "en transit") — optionnel, garde l'ancien si vide
 }
 
+// Message vide — utilisé quand une fonction n'a besoin d'aucun paramètre
+// Exemple : GetAllTracks n'a besoin de rien pour lister tous les suivis
 message Empty {}

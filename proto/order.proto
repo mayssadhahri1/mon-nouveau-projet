@@ -1,42 +1,104 @@
+// ============================================================
+// ORDER.PROTO — Contrat de communication du service commandes
+//
+// Ce fichier = un contrat entre services.
+// Il définit exactement :
+//   - quelles fonctions on peut appeler sur ce service
+//   - quelles données on envoie
+//   - quelles données on reçoit en retour
+// Tous les services qui parlent au Order Service
+// doivent respecter ce contrat.
+// ============================================================
+
+// Version 3 de Protocol Buffers = le langage utilisé dans les fichiers .proto
 syntax = "proto3";
 
+// Le nom du package = l'espace de noms de ce service
+// Dans le code JS on y accède avec : grpc.loadPackageDefinition(...).order
 package order;
 
+
+// ========================
+// SERVICE — Les fonctions disponibles
+// rpc = "Remote Procedure Call" = appel d'une fonction sur un autre serveur
+// Syntaxe : rpc NomFonction (CeQuOnEnvoie) returns (CeQuOnReçoit)
+// ========================
+
 service OrderService {
+
+    // Créer une nouvelle commande
+    // Envoie : OrderRequest (produit + quantité)
+    // Reçoit : OrderResponse (la commande créée avec son id)
     rpc CreateOrder (OrderRequest) returns (OrderResponse);
+
+    // Voir une commande par son identifiant
+    // Envoie : OrderId (juste le numéro de la commande)
+    // Reçoit : OrderResponse (la commande trouvée)
     rpc GetOrder (OrderId) returns (OrderResponse);
+
+    // Voir toutes les commandes
+    // Envoie : Empty (rien, pas besoin de paramètre)
+    // Reçoit : OrderList (un tableau de toutes les commandes)
     rpc GetOrders (Empty) returns (OrderList);
+
+    // Modifier le statut d'une commande
+    // Envoie : UpdateOrderRequest (id + nouveau statut)
+    // Reçoit : OrderResponse (la commande mise à jour)
     rpc UpdateOrder (UpdateOrderRequest) returns (OrderResponse);
+
+    // Supprimer une commande
+    // Envoie : OrderId (le numéro de la commande à supprimer)
+    // Reçoit : DeleteResponse (un message de confirmation)
     rpc DeleteOrder (OrderId) returns (DeleteResponse);
 }
 
+
+// ========================
+// MESSAGES — Les structures de données échangées
+// Chaque "message" = un objet avec ses champs
+// Le numéro après "=" = position du champ dans le binaire (usage interne, pas à retenir)
+// Les types : string = texte, int32 = nombre entier
+// ========================
+
+// Données envoyées pour CRÉER une commande
 message OrderRequest {
-    string product = 1;
-    int32 quantity = 2;
+    string product  = 1;  // nom du produit (ex: "vélo")
+    int32  quantity = 2;  // quantité commandée (ex: 2)
 }
 
+// Données envoyées pour cibler UNE commande par son numéro
 message OrderId {
-    int32 id = 1;
+    int32 id = 1;  // numéro de la commande (ex: 42)
 }
 
+// Données renvoyées quand on retourne UNE commande
+// C'est la forme complète d'une commande
 message OrderResponse {
-    int32 id = 1;
-    string product = 2;
-    int32 quantity = 3;
-    string status = 4;
+    int32  id       = 1;  // numéro unique généré automatiquement
+    string product  = 2;  // nom du produit
+    int32  quantity = 3;  // quantité
+    string status   = 4;  // statut actuel (ex: "pending", "expédiée", "livrée")
 }
 
+// Données renvoyées quand on retourne PLUSIEURS commandes
+// "repeated" = c'est un tableau (0, 1 ou plusieurs éléments)
 message OrderList {
-    repeated OrderResponse orders = 1;
+    repeated OrderResponse orders = 1;  // tableau de commandes
 }
 
+// Données envoyées pour MODIFIER une commande
 message UpdateOrderRequest {
-    int32 id = 1;
-    string status = 2;
+    int32  id     = 1;  // numéro de la commande à modifier
+    string status = 2;  // nouveau statut à appliquer
 }
 
+// Données renvoyées après une SUPPRESSION
+// On ne peut pas renvoyer la commande supprimée (elle n'existe plus)
+// donc on renvoie juste un message texte de confirmation
 message DeleteResponse {
-    string message = 1;
+    string message = 1;  // ex: "Order deleted successfully"
 }
 
+// Message vide — utilisé quand une fonction n'a besoin d'aucun paramètre
+// Exemple : GetOrders n'a besoin de rien pour lister toutes les commandes
 message Empty {}

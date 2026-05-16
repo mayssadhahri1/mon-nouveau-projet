@@ -1,193 +1,260 @@
-const grpc = require("@grpc/grpc-js");
-const protoLoader = require("@grpc/proto-loader");
-const Database = require("better-sqlite3");
-const express = require('express');
-const bcrypt = require('bcryptjs');
-const cors = require('cors');
+// ============================================================
+// ORDER SERVICE — Service de gestion des commandes
+// Ce fichier gère tout ce qui concerne les commandes :
+// - créer, voir, modifier, supprimer une commande (via gRPC)
+// - publier un message Kafka à chaque création/modification
+//   pour que le service livraisons soit averti automatiquement
+// - stocker les commandes dans une base de données SQLite
+// ============================================================
 
-// ==========================================
-// 1. Initialisation SQLite (Base de données)
-// ==========================================
+// --- On importe les outils dont on a besoin ---
+const grpc = require("@grpc/grpc-js");            // pour créer le serveur gRPC
+const protoLoader = require("@grpc/proto-loader"); // pour lire le fichier .proto (contrat)
+const Database = require("better-sqlite3");        // base de données SQLite (fichier local)
+const { Kafka } = require("kafkajs");              // pour envoyer des messages Kafka
+
+
+// ========================
+// 1. BASE DE DONNÉES SQLite
+// On stocke toutes les commandes dans un fichier local "orders.db"
+// ========================
+
+// On ouvre (ou crée) le fichier de base de données
 const db = new Database("orders.db");
 
-// Création des tables orders et users
+// On crée la table "orders" si elle n'existe pas encore
 db.exec(`
     CREATE TABLE IF NOT EXISTS orders (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        product TEXT,
-        quantity INTEGER,
-        status TEXT DEFAULT 'pending'
-    );
-    
-    CREATE TABLE IF NOT EXISTS users (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        email TEXT UNIQUE NOT NULL,
-        password TEXT NOT NULL
-    );
+        id INTEGER PRIMARY KEY AUTOINCREMENT,  -- id auto-incrémenté : 1, 2, 3... (SQLite le gère seul)
+        product TEXT,                          -- nom du produit commandé
+        quantity INTEGER,                      -- quantité commandée
+        status TEXT DEFAULT 'pending'          -- statut par défaut = "en attente"
+    )
 `);
+// AUTOINCREMENT = SQLite génère l'id tout seul, on n'a pas à s'en occuper
 
-// ==========================================
-// 2. SIMULATION KAFKA (Évite l'erreur de crash)
-// ==========================================
-console.log("🔮 Mode simulation Kafka activé (Pas besoin d'installer Kafka !)");
 
-// Au lieu de se connecter à un vrai serveur, on simule l'envoi
-async function sendToKafka(topic, message) {
+// ========================
+// 2. KAFKA PRODUCER — envoyer des messages aux autres services
+// Kafka = un "bus de messages" entre services
+// Ce service est un PRODUCTEUR : il envoie des messages
+// Le service livraisons est un CONSOMMATEUR : il les reçoit
+// ========================
+
+// Configuration de la connexion Kafka
+const kafka = new Kafka({
+    clientId: "order-service",  // nom de ce client (pour les logs Kafka)
+    brokers: ["localhost:9092"], // adresse du serveur Kafka
+});
+
+// On crée un "producer" = un expéditeur de messages
+const producer = kafka.producer();
+
+// Fonction pour se connecter à Kafka au démarrage
+async function startProducer() {
     try {
-        console.log(`📡 [KAFKA MOCK] Événement envoyé au topic "${topic}" :`, message);
-        console.log(`⚡ Kafka notifie virtuellement Nour (Delivery Service) !`);
-    } catch (error) {
-        console.error("❌ Erreur de simulation Kafka:", error);
+        await producer.connect(); // tentative de connexion
+        console.log("📡 Kafka Producer connecté");
+    } catch (err) {
+        // Si Kafka n'est pas lancé, on ne plante pas — on continue sans lui
+        console.error("⚠️ Kafka non disponible — on continue sans Kafka:", err.message);
     }
 }
 
-// ==========================================
-// 3. Charger le fichier Proto (Pour gRPC)
-// ==========================================
+// Fonction utilitaire pour envoyer un message sur un topic Kafka
+// topic = le "canal" sur lequel on publie (ex: "order-topic")
+// message = les données qu'on envoie (objet JavaScript converti en JSON)
+async function sendToKafka(topic, message) {
+    try {
+        await producer.send({
+            topic: topic,
+            messages: [{ value: JSON.stringify(message) }], // on convertit l'objet en texte JSON
+        });
+        console.log(`📡 Message envoyé au topic ${topic}:`, message);
+    } catch (error) {
+        // Si l'envoi échoue, on log l'erreur mais on ne bloque pas le reste
+        console.error("⚠️ Erreur envoi Kafka:", error.message);
+    }
+}
+
+
+// ========================
+// 3. CHARGEMENT DU FICHIER .PROTO
+// Le fichier .proto = le contrat entre les services
+// Il définit les messages et les fonctions disponibles
+// ========================
+
 const packageDef = protoLoader.loadSync("../proto/order.proto", {
-    keepCase: true,
-    longs: String,
-    enums: String,
-    defaults: true,
-    oneofs: true
+    keepCase: true,  // garde les noms de champs tels quels
+    longs: String,   // les grands nombres sont traités comme du texte
+    enums: String,   // les énumérations aussi
+    defaults: true,  // inclut les valeurs par défaut si absentes
+    oneofs: true     // gère les champs "un parmi plusieurs"
 });
+
+// On extrait le package "order" du proto chargé
 const orderPackage = grpc.loadPackageDefinition(packageDef).order;
 
-// ==========================================
-// 4. Implémentation des fonctions gRPC
-// ==========================================
+
+// ========================
+// 4. FONCTIONS gRPC — ce que le service sait faire
+// Ces fonctions sont appelées par la Gateway quand elle reçoit une requête
+// ========================
+
+// --- Créer une nouvelle commande ---
+// Appelée quand on fait POST /orders via la gateway
 async function CreateOrder(call, callback) {
-    const { product, quantity } = call.request;
+    const { product, quantity } = call.request; // données reçues de la gateway
     try {
+        // On prépare la requête SQL pour insérer une nouvelle commande
         const stmt = db.prepare(
             "INSERT INTO orders (product, quantity, status) VALUES (?, ?, 'pending')"
         );
-        const result = stmt.run(product, quantity);
-        
+        const result = stmt.run(product, quantity); // on exécute l'insertion
+
+        // On construit l'objet commande avec l'id généré automatiquement par SQLite
         const newOrder = {
-            id: result.lastInsertRowid,
+            id: result.lastInsertRowid, // lastInsertRowid = l'id de la ligne qu'on vient d'insérer
             product,
             quantity,
-            status: "pending",
+            status: "pending", // statut initial : en attente
         };
 
-        console.log("✅ Commande créée en DB:", newOrder);
+        console.log("✅ Commande créée:", newOrder);
 
-        // Appel de notre fonction simulée
-        await sendToKafka('order-topic', newOrder);
+        // On publie la commande sur Kafka → le service livraisons va la recevoir
+        // et créer automatiquement une livraison associée
+        await sendToKafka("order-topic", newOrder);
 
-        callback(null, newOrder);
+        callback(null, newOrder); // on renvoie la commande créée (null = pas d'erreur)
+    } catch (err) {
+        console.error("❌ Erreur CreateOrder:", err.message);
+        callback({ code: grpc.status.INTERNAL, message: err.message }); // erreur serveur
+    }
+}
+
+// --- Voir une commande par son id ---
+// Appelée quand on fait GET /orders/:id via la gateway
+function GetOrder(call, callback) {
+    try {
+        // On cherche la commande dans la base par son identifiant
+        const order = db
+            .prepare("SELECT * FROM orders WHERE id = ?")
+            .get(call.request.id); // .get() renvoie une seule ligne (ou undefined si pas trouvée)
+
+        // Si la commande n'existe pas, on renvoie une erreur 404
+        if (!order) {
+            return callback({
+                code: grpc.status.NOT_FOUND, // code gRPC "introuvable"
+                message: "Commande non trouvée",
+            });
+        }
+
+        callback(null, order); // on renvoie la commande trouvée
     } catch (err) {
         callback({ code: grpc.status.INTERNAL, message: err.message });
     }
 }
 
-function GetOrder(call, callback) {
-    const order = db.prepare("SELECT * FROM orders WHERE id = ?").get(call.request.id);
-    if (!order) return callback({ code: grpc.status.NOT_FOUND, message: "Order not found" });
-    callback(null, order);
-}
-
+// --- Voir toutes les commandes ---
+// Appelée quand on fait GET /orders via la gateway
 function GetOrders(call, callback) {
-    const orders = db.prepare("SELECT * FROM orders").all();
-    callback(null, { orders });
-}
-
-function UpdateOrder(call, callback) {
-    const { id, status } = call.request;
-    db.prepare("UPDATE orders SET status = ? WHERE id = ?").run(status, id);
-    const order = db.prepare("SELECT * FROM orders WHERE id = ?").get(id);
-    callback(null, order);
-}
-
-function DeleteOrder(call, callback) {
-    db.prepare("DELETE FROM orders WHERE id = ?").run(call.request.id);
-    callback(null, { message: "Order deleted successfully" });
-}
-
-// Démarrage du serveur gRPC
-const server = new grpc.Server();
-server.addService(orderPackage.OrderService.service, {
-    CreateOrder,
-    GetOrder,
-    GetOrders,
-    UpdateOrder,
-    DeleteOrder,
-});
-
-server.bindAsync(
-    "0.0.0.0:50051",
-    grpc.ServerCredentials.createInsecure(),
-    (err, port) => {
-        if (err) return console.error(err);
-        console.log(`📦 Order Service gRPC running on port ${port}`);
-    }
-);
-
-// ==========================================
-// 5. Configuration et Routes HTTP Express (Auth)
-// ==========================================
-const app = express();
-app.use(cors());
-app.use(express.json());
-
-// Inscription
-app.post('/internal/register', async (req, res) => {
-    const { email, password } = req.body;
-
-    if (!email || !password) {
-        return res.status(400).json({ error: "Veuillez remplir tous les champs." });
-    }
-
     try {
-        const salt = await bcrypt.genSalt(10);
-        const hashedPassword = await bcrypt.hash(password, salt);
+        // .all() renvoie toutes les lignes de la table sous forme de tableau
+        const orders = db.prepare("SELECT * FROM orders").all();
 
-        const insert = db.prepare('INSERT INTO users (email, password) VALUES (?, ?)');
-        insert.run(email, hashedPassword);
-
-        return res.status(201).json({ message: "Votre inscription est réussie ! Vous pouvez vous connecter." });
-    } catch (error) {
-        if (error.code === 'SQLITE_CONSTRAINT_UNIQUE') {
-            return res.status(400).json({ error: "Cette adresse email est déjà enregistrée." });
-        }
-        return res.status(500).json({ error: "Erreur lors de la sauvegarde de l'utilisateur." });
+        // On renvoie un objet { orders: [...] } car gRPC attend ce format
+        callback(null, { orders });
+    } catch (err) {
+        callback({ code: grpc.status.INTERNAL, message: err.message });
     }
-});
+}
 
-// Connexion
-app.post('/internal/login', async (req, res) => {
-    const { email, password } = req.body;
-
-    if (!email || !password) {
-        return res.status(400).json({ error: "Veuillez remplir tous les champs." });
-    }
-
+// --- Modifier le statut d'une commande ---
+// Appelée quand on fait PUT /orders/:id via la gateway
+async function UpdateOrder(call, callback) {
+    const { id, status } = call.request; // id de la commande + nouveau statut
     try {
-        const user = db.prepare('SELECT * FROM users WHERE email = ?').get(email);
+        // On met à jour le statut dans la base
+        db.prepare("UPDATE orders SET status = ? WHERE id = ?").run(status, id);
 
-        if (!user) {
-            return res.status(401).json({ error: "Identifiants incorrects." });
+        // On relit la commande pour vérifier qu'elle existe et avoir ses données complètes
+        const order = db
+            .prepare("SELECT * FROM orders WHERE id = ?")
+            .get(id);
+
+        // Si la commande n'existe pas (l'id était invalide)
+        if (!order) {
+            return callback({
+                code: grpc.status.NOT_FOUND,
+                message: "Commande non trouvée",
+            });
         }
 
-        const isMatch = await bcrypt.compare(password, user.password);
-        if (!isMatch) {
-            return res.status(401).json({ error: "Identifiants incorrects." });
-        }
-
-        return res.json({
-            message: "Connexion réussie !",
-            token: "fake-jwt-token-pour-le-moment",
-            user: { id: user.id, email: user.email }
+        // On notifie Kafka que le statut a changé
+        // Les autres services pourront réagir à cet événement
+        await sendToKafka("order-topic", {
+            event: "ORDER_UPDATED", // on ajoute un type d'événement pour que les services sachent quoi faire
+            ...order,               // on inclut toutes les données de la commande (spread operator)
         });
 
-    } catch (error) {
-        return res.status(500).json({ error: "Erreur lors de la tentative de connexion." });
+        console.log("✅ Commande mise à jour:", order);
+        callback(null, order); // on renvoie la commande avec le nouveau statut
+    } catch (err) {
+        callback({ code: grpc.status.INTERNAL, message: err.message });
     }
+}
+
+// --- Supprimer une commande ---
+// Appelée quand on fait DELETE /orders/:id via la gateway
+function DeleteOrder(call, callback) {
+    try {
+        // On supprime la commande de la base
+        db.prepare("DELETE FROM orders WHERE id = ?").run(call.request.id);
+
+        console.log("🗑️ Commande supprimée:", call.request.id);
+
+        // On renvoie un message de confirmation
+        // (pas la commande elle-même car elle n'existe plus)
+        callback(null, { message: "Order deleted successfully" });
+    } catch (err) {
+        callback({ code: grpc.status.INTERNAL, message: err.message });
+    }
+}
+
+
+// ========================
+// 5. DÉMARRAGE DU SERVEUR gRPC
+// On crée le serveur, on enregistre les fonctions, et on l'ouvre sur le port 50051
+// ========================
+
+// Création du serveur gRPC
+const server = new grpc.Server();
+
+// On dit au serveur quelles fonctions il doit exposer
+// Le service est défini dans le .proto, les fonctions sont celles d'au-dessus
+server.addService(orderPackage.OrderService.service, {
+    CreateOrder,  // créer une commande
+    GetOrder,     // voir une commande
+    GetOrders,    // voir toutes les commandes
+    UpdateOrder,  // modifier une commande
+    DeleteOrder,  // supprimer une commande
 });
 
-// Lancement du serveur HTTP pour l'Auth (Port 3001 pour ne pas bloquer l'API gateway)
-const HTTP_PORT = 3001;
-app.listen(HTTP_PORT, () => {
-    console.log(`🔐 Auth Server (Express) running on port ${HTTP_PORT}`);
-});
+// On démarre le serveur sur le port 50051
+// 0.0.0.0 = accessible depuis toutes les interfaces réseau (pas seulement localhost)
+server.bindAsync(
+    "0.0.0.0:50051",
+    grpc.ServerCredentials.createInsecure(), // pas de chiffrement (OK pour développement local)
+    async (err, port) => {
+        if (err) {
+            console.error("❌ Erreur démarrage serveur:", err);
+            return; // on arrête si ça échoue
+        }
+
+        // Une fois le serveur gRPC lancé, on connecte le producer Kafka
+        await startProducer();
+
+        console.log(`📦 Order Service en ligne sur le port ${port}`);
+    }
+);
