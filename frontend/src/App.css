@@ -36,3 +36,194 @@
     transform: rotate(360deg);
   }
 }
+/* Centrage complet de la boîte sur l'écran */
+.page-container {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  min-height: 100vh;
+  background-color: #eef2f7;
+  font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+  padding: 20px;
+}
+
+/* La grande carte principale */
+.auth-card {
+  display: flex;
+  width: 100%;
+  max-width: 950px;
+  height: 550px;
+  background-color: #ffffff;
+  border-radius: 20px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.08);
+  overflow: hidden;
+  position: relative;
+}
+
+/* --- PANNEAU GAUCHE (BLEU) --- */
+.left-panel {
+  flex: 1.2;
+  background-color: #1565C0;
+  color: #ffffff;
+  padding: 40px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  position: relative;
+}
+
+.welcome-text {
+  font-size: 14px;
+  letter-spacing: 1px;
+  margin-bottom: 20px;
+  opacity: 0.9;
+}
+
+.logo-circle {
+  width: 85px;
+  height: 85px;
+  background-color: #ffffff;
+  border-radius: 50%;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  margin-bottom: 15px;
+  box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+}
+
+.brand-name {
+  font-size: 32px;
+  font-weight: bold;
+  margin-bottom: 20px;
+}
+
+.description {
+  font-size: 12px;
+  line-height: 1.6;
+  max-width: 280px;
+  opacity: 0.75;
+  margin-bottom: 40px;
+}
+
+.panel-footer {
+  display: flex;
+  gap: 10px;
+  font-size: 10px;
+  opacity: 0.6;
+  margin-top: auto;
+}
+
+/* --- VAGUE AU MILIEU --- */
+.wave-container {
+  position: absolute;
+  left: 54.5%; /* Positionnement pile à la frontière des deux blocs */
+  top: 0;
+  height: 100%;
+  z-index: 5;
+  pointer-events: none; /* Laisse cliquer à travers */
+}
+.wave-container img {
+  height: 100%;
+}
+
+/* --- PANNEAU DROIT (BLANC) --- */
+.right-panel {
+  flex: 1;
+  background-color: #ffffff;
+  padding: 50px 50px 50px 70px; /* Plus d'espace à gauche à cause de la vague */
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+
+.right-panel h2 {
+  font-size: 24px;
+  color: #333333;
+  margin-bottom: 30px;
+}
+
+.auth-form {
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+}
+
+/* Inputs avec la ligne du dessous uniquement */
+.input-group {
+  display: flex;
+  flex-direction: column;
+}
+
+.input-group label {
+  font-size: 13px;
+  color: #333333;
+  font-weight: 600;
+  margin-bottom: 5px;
+}
+
+.input-group input {
+  border: none;
+  border-bottom: 1px solid #cccccc;
+  padding: 8px 0;
+  font-size: 14px;
+  outline: none;
+  background: transparent;
+  transition: border-color 0.3s;
+}
+
+.input-group input:focus {
+  border-bottom: 2px solid #1565C0;
+}
+
+/* Checkbox */
+.checkbox-container {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  color: #666666;
+}
+.checkbox-container a {
+  color: #1565C0;
+  text-decoration: none;
+}
+
+/* --- BOUTONS --- */
+.buttons-group {
+  display: flex;
+  gap: 15px;
+  margin-top: 15px;
+}
+
+.btn-signup, .btn-signin {
+  flex: 1;
+  padding: 11px;
+  border-radius: 20px; /* Boutons très arrondis comme sur l'image */
+  font-size: 13px;
+  font-weight: bold;
+  cursor: pointer;
+  transition: all 0.3s;
+}
+
+.btn-signup {
+  background-color: #1565C0;
+  color: #ffffff;
+  border: none;
+  box-shadow: 0 4px 12px rgba(21, 101, 192, 0.3);
+}
+
+.btn-signup:hover {
+  background-color: #0d47a1;
+}
+
+.btn-signin {
+  background-color: #ffffff;
+  color: #1565C0;
+  border: 1.5px solid #1565C0;
+}
+
+.btn-signin:hover {
+  background-color: #f0f6ff;
+}

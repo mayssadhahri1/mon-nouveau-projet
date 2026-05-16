@@ -1,179 +1,102 @@
 const grpc = require("@grpc/grpc-js");
 const protoLoader = require("@grpc/proto-loader");
 const path = require("path");
-const Database = require("better-sqlite3");
 const { Kafka } = require("kafkajs");
 
-// ========================
-// 1. SQLite Database
-// ========================
-const db = new Database("deliveries.db");
-db.exec(`
-    CREATE TABLE IF NOT EXISTS deliveries (
-        id TEXT PRIMARY KEY,
-        order_id INTEGER,
-        address TEXT,
-        status TEXT DEFAULT 'assigned'
-    )
-`);
+// --- 1. CONFIGURATION KAFKA (Nour écoute Mayssa) ---
+const kafka = new Kafka({ 
+    clientId: 'delivery-service', 
+    brokers: ['localhost:9092'] 
+});
+const consumer = kafka.consumer({ groupId: 'delivery-group' });
 
+// Base de données temporaire en mémoire
+let deliveries = [];
 let idCounter = 1;
 
-// Récupérer le prochain ID depuis la DB
-function getNextId() {
-    const row = db.prepare("SELECT COUNT(*) as count FROM deliveries").get();
-    return row.count + 1;
-}
-
-// ========================
-// 2. Charger le Proto
-// ========================
+// --- 2. CHARGEMENT DU FICHIER PROTO ---
 const PROTO_PATH = path.join(__dirname, "../proto/delivery.proto");
 const packageDef = protoLoader.loadSync(PROTO_PATH, {
     keepCase: true,
     longs: String,
     enums: String,
     defaults: true,
-    oneofs: true,
+    oneofs: true
 });
 const deliveryPackage = grpc.loadPackageDefinition(packageDef).delivery;
 
-// ========================
-// 3. Kafka Consumer
-// ========================
-const kafka = new Kafka({
-    clientId: "delivery-service",
-    brokers: ["localhost:9092"],
-});
-const consumer = kafka.consumer({ groupId: "delivery-group" });
-
+// --- 3. LOGIQUE KAFKA (Réception automatique) ---
 async function runKafka() {
     try {
         await consumer.connect();
-        await consumer.subscribe({ topic: "order-topic", fromBeginning: true });
-
+        await consumer.subscribe({ topic: 'order-topic', fromBeginning: true });
+        
         await consumer.run({
             eachMessage: async ({ message }) => {
                 const order = JSON.parse(message.value.toString());
-
-                // Éviter les doublons : vérifier si une livraison existe déjà pour cette commande
-                const existing = db
-                    .prepare("SELECT * FROM deliveries WHERE order_id = ? AND id LIKE 'DEL-AUTO-%'")
-                    .get(order.id);
-
-                if (existing) {
-                    console.log("⚠️ Livraison auto déjà existante pour commande:", order.id);
-                    return;
-                }
-
-                console.log("📥 [Kafka] Commande reçue de Mayssa n°:", order.id);
-
-                const autoId = "DEL-AUTO-" + getNextId();
+                console.log("📥 [Kafka] Message reçu ! Commande de Mayssa n°:", order.id);
+                
+                // Création automatique d'une livraison suite au message Kafka
                 const autoDelivery = {
-                    id: autoId,
-                    order_id: order.id,
+                    id: "DEL-AUTO-" + idCounter++,
+                    order_id: String(order.id),
                     address: "En attente d'adresse (via Kafka)",
                     status: "ready_for_pickup",
                 };
-
-                db.prepare(
-                    "INSERT OR IGNORE INTO deliveries (id, order_id, address, status) VALUES (?, ?, ?, ?)"
-                ).run(autoDelivery.id, autoDelivery.order_id, autoDelivery.address, autoDelivery.status);
-
-                console.log("✅ Livraison auto créée et persistée:", autoDelivery.id);
+                deliveries.push(autoDelivery);
+                console.log("✅ Livraison auto créée en mémoire.");
             },
         });
     } catch (err) {
-        console.log("⚠️ Kafka non détecté — mode gRPC seul:", err.message);
+        console.log("⚠️ Kafka n'est pas détecté. Le service fonctionne en mode gRPC seul.");
     }
 }
 
-// ========================
-// 4. Implémentation gRPC
-// ========================
+// Lancer le consumer Kafka
+runKafka().catch(console.error);
 
-// Assigner une livraison manuellement
+// --- 4. LOGIQUE gRPC (Réponse à la Gateway) ---
+
+/**
+ * AssignDelivery: Création manuelle d'une livraison (via Postman/UI)
+ */
 function AssignDelivery(call, callback) {
     const { order_id, address } = call.request;
-    const id = "DEL-" + getNextId();
     const delivery = {
-        id,
-        order_id,
+        id: "DEL-" + idCounter++,
+        order_id: String(order_id),
         address: address || "Adresse non fournie",
         status: "assigned",
     };
-
-    db.prepare(
-        "INSERT INTO deliveries (id, order_id, address, status) VALUES (?, ?, ?, ?)"
-    ).run(delivery.id, delivery.order_id, delivery.address, delivery.status);
-
-    console.log("📦 [gRPC] Livraison assignée et persistée:", delivery.id);
+    deliveries.push(delivery);
+    console.log("📦 [gRPC] Livraison assignée manuellement:", delivery.id);
     callback(null, delivery);
 }
 
-// Voir une livraison
-function GetDelivery(call, callback) {
-    const delivery = db
-        .prepare("SELECT * FROM deliveries WHERE id = ?")
-        .get(call.request.id);
-
-    if (!delivery) {
-        return callback({
-            code: grpc.status.NOT_FOUND,
-            message: "Livraison non trouvée",
-        });
-    }
-    callback(null, delivery);
-}
-
-// Voir toutes les livraisons
+/**
+ * GetDeliveries: Renvoie la liste complète des livraisons à l'interface
+ */
 function GetDeliveries(call, callback) {
-    const deliveries = db.prepare("SELECT * FROM deliveries").all();
-    console.log("📊 [gRPC] Liste livraisons — Total:", deliveries.length);
+    console.log("📊 [gRPC] Envoi de la liste des livraisons (Total: " + deliveries.length + ")");
     callback(null, { deliveries });
 }
 
-// Modifier le statut d'une livraison
-function UpdateDeliveryStatus(call, callback) {
-    const { id, status } = call.request;
-    const existing = db.prepare("SELECT * FROM deliveries WHERE id = ?").get(id);
-
-    if (!existing) {
-        return callback({
-            code: grpc.status.NOT_FOUND,
-            message: "Livraison non trouvée",
-        });
-    }
-
-    db.prepare("UPDATE deliveries SET status = ? WHERE id = ?").run(status, id);
-    const updated = db.prepare("SELECT * FROM deliveries WHERE id = ?").get(id);
-
-    console.log("✅ [gRPC] Statut mis à jour:", id, "->", status);
-    callback(null, updated);
-}
-
-// ========================
-// 5. Démarrage du serveur
-// ========================
+// --- 5. DÉMARRAGE DU SERVEUR gRPC ---
 const server = new grpc.Server();
-
 server.addService(deliveryPackage.DeliveryService.service, {
     AssignDelivery,
-    GetDelivery,
     GetDeliveries,
-    UpdateDeliveryStatus,
 });
 
+const PORT = "50052";
 server.bindAsync(
-    "0.0.0.0:50052",
+    `0.0.0.0:${PORT}`,
     grpc.ServerCredentials.createInsecure(),
-    async (err, port) => {
+    (err, port) => {
         if (err) {
-            console.error("❌ Erreur démarrage:", err);
+            console.error("❌ Erreur de démarrage gRPC:", err);
             return;
         }
-        console.log(`🚚 Delivery Service en ligne sur le port ${port}`);
-        console.log(`💾 Base de données SQLite: deliveries.db`);
-        await runKafka();
+        console.log(`🚚 Delivery Service (Nour) en ligne sur le port ${port}`);
     }
 );
