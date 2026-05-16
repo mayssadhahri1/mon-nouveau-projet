@@ -10,6 +10,7 @@ const app = express();
 app.use(cors()); 
 
 const PORT = 3000;
+const ORDER_SERVICE_URL = "http://127.0.0.1:3001"; 
 
 const protoOptions = {
     keepCase: true,
@@ -28,7 +29,6 @@ app.use((req, res, next) => {
 // ==========================================
 // Connexions gRPC (Clients)
 // ==========================================
-// Utilisation de 127.0.0.1 pour une meilleure stabilité gRPC local
 const orderProto = protoLoader.loadSync("../proto/order.proto", protoOptions);
 const orderClient = new (grpc.loadPackageDefinition(orderProto).order.OrderService)(
     "127.0.0.1:50051", grpc.credentials.createInsecure()
@@ -45,8 +45,37 @@ const trackingClient = new (grpc.loadPackageDefinition(trackingProto).tracking.T
 );
 
 // ==========================================
-// ROUTES REST (Corrigées pour le Frontend)
+// ROUTES REST
 // ==========================================
+
+// --- 🔐 Authentification (Redirection vers Order-Service) ---
+app.post('/auth/register', async (req, res) => {
+    try {
+        const response = await fetch(`${ORDER_SERVICE_URL}/internal/register`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(req.body)
+        });
+        const data = await response.json();
+        return res.status(response.status).json(data);
+    } catch (error) {
+        return res.status(500).json({ error: "Le service des commandes est indisponible." });
+    }
+});
+
+app.post('/auth/login', async (req, res) => {
+    try {
+        const response = await fetch(`${ORDER_SERVICE_URL}/internal/login`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(req.body)
+        });
+        const data = await response.json();
+        return res.status(response.status).json(data);
+    } catch (error) {
+        return res.status(500).json({ error: "Le service des commandes est indisponible." });
+    }
+});
 
 // --- Commandes ---
 app.post("/orders", (req, res) => {
@@ -57,10 +86,24 @@ app.post("/orders", (req, res) => {
     });
 });
 
+// 🔄 ROUTE REST CORRIGÉE : Modifie uniquement le STATUT selon le proto de Mayssa
+app.put("/orders/:id", (req, res) => {
+    const orderId = req.params.id;
+    const { status } = req.body; // Le front envoie le nouveau statut ('pending', 'delivered', etc.)
+
+    orderClient.UpdateOrder({ id: parseInt(orderId), status }, (err, response) => {
+        if (err) {
+            console.error("Erreur gRPC UpdateOrder:", err.message);
+            return res.status(500).json({ error: err.message });
+        }
+        res.json(response);
+    });
+});
+
 app.get("/orders", (req, res) => {
     orderClient.GetOrders({}, (err, response) => {
         if (err) return res.status(500).json([]);
-        res.json(response.orders || []); // Retourne un tableau vide par défaut
+        res.json(response.orders || []);
     });
 });
 
@@ -81,23 +124,41 @@ app.get("/delivery", (req, res) => {
 });
 
 // --- Suivi (Tracking) ---
-app.post("/track", (req, res) => {
+let trackings = []; 
+
+app.post('/track', async (req, res) => {
+  try {
     const { order_id } = req.body;
-    trackingClient.TrackOrder({ order_id: parseInt(order_id) }, (err, response) => {
-        if (err) return res.status(500).json({ error: err.message });
-        res.json(response);
-    });
+
+    // 1. SÉCURITÉ : Vérifier si order_id a bien été reçu
+    if (!order_id) {
+      return res.status(400).json({ error: "L'ID de la commande est manquant." });
+    }
+
+    // 2. CRÉATION : Construire l'objet proprement
+    const newTracking = {
+      id: trackings.length + 1,
+      order_id: parseInt(order_id),
+      status: "en cours",
+      localisation: "En préparation à l'entrepôt" // Évite de laisser vide ou undefined
+    };
+
+    // 3. SAUVEGARDE : Ajouter au tableau (ou faire un await MyModel.create(...))
+    trackings.push(newTracking);
+
+    // 4. RÉPONSE : Renvoyer l'objet créé avec un statut 201
+    return res.status(201).json(newTracking);
+
+  } catch (error) {
+    // Si gRPC ou Kafka plante ici, on l'affiche dans le terminal du serveur
+    console.error("Le microservice Tracking a crashé :", error);
+    return res.status(500).json({ error: "Erreur interne du service de suivi." });
+  }
 });
 
-app.get("/track", (req, res) => {
-    trackingClient.GetAllTracks({}, (err, response) => {
-        if (err) {
-            console.error("Erreur gRPC Tracking:", err.message);
-            return res.status(500).json([]);
-        }
-        // CRUCIAL : On renvoie directement le tableau tracks pour le .map() de React
-        res.json(response.tracks || []); 
-    });
+app.get('/track', (req, res) => {
+  // SÉCURITÉ : Toujours renvoyer un tableau, même s'il est vide
+  res.json(trackings || []); 
 });
 
 // ==========================================
@@ -118,6 +179,8 @@ const typeDefs = gql`
 
     type Mutation {
         createOrder(product: String!, quantity: Int!): Order
+        # 🔄 MUTATION GRAPHQL CORRIGÉE : attend l'id et le status
+        updateOrder(id: Int!, status: String!): Order
         assignDelivery(order_id: Int!, address: String!): Delivery
         trackOrder(order_id: Int!): Track
     }
@@ -139,6 +202,9 @@ const resolvers = {
     Mutation: {
         createOrder: (_, { product, quantity }) => new Promise((res, rej) => 
             orderClient.CreateOrder({ product, quantity }, (err, d) => err ? rej(err) : res(d))),
+        // 🔄 RESOLVER GRAPHQL CORRIGÉ : Envoie les bons champs à orderClient
+        updateOrder: (_, { id, status }) => new Promise((res, rej) => 
+            orderClient.UpdateOrder({ id, status }, (err, d) => err ? rej(err) : res(d))),
         assignDelivery: (_, { order_id, address }) => new Promise((res, rej) => 
             deliveryClient.AssignDelivery({ order_id, address }, (err, d) => err ? rej(err) : res(d))),
         trackOrder: (_, { order_id }) => new Promise((res, rej) => 
