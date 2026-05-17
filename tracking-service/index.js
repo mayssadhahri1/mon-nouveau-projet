@@ -1,304 +1,247 @@
-
-// Permet de créer le serveur microservice
 const grpc = require("@grpc/grpc-js");
-// Permet de charger les fichiers .proto
 const protoLoader = require("@grpc/proto-loader");
-
-// Sert à construire les chemins des fichiers
 const path = require("path");
-
+const { Kafka } = require("kafkajs");
 const Database = require("better-sqlite3");
 
+// Connexion / Création de la base de données
 const db = new Database("tracking.db");
 
-
-// Création automatique table tracks
+// Création de la table de suivi (tracks)
 db.exec(`
-
     CREATE TABLE IF NOT EXISTS tracks (
-
-        // ID unique du suivi
-        // Exemple : TRK-1
         id TEXT PRIMARY KEY,
-
-        // ID commande associée
         order_id INTEGER,
-
-        // Position actuelle colis
         location TEXT DEFAULT 'Entrepôt central',
-
-        // Statut livraison
         status TEXT DEFAULT 'en cours'
     )
 `);
-// GÉNÉRATION ID SUIVI
-// Fonction qui génère le prochain ID
+
+// Fonction utilitaire pour incrémenter l'ID de suivi (ex: TRK-1, TRK-2...)
 function getNextId() {
-
-    // Compte le nombre de suivis
-    const row = db
-        .prepare(
-
-            "SELECT COUNT(*) as count FROM tracks"
-        )
-        .get();
-
-    // Retour prochain numéro
+    const row = db.prepare("SELECT COUNT(*) as count FROM tracks").get();
     return row.count + 1;
 }
-// 2. CHARGEMENT FICHIER PROTO
-// Construction chemin proto
-const PROTO_PATH = path.join(
 
-    __dirname,
+// Chargement du fichier Protocol Buffers (.proto)
+const PROTO_PATH = path.join(__dirname, "../proto/tracking.proto");
 
-    "../proto/tracking.proto"
-);
+const packageDef = protoLoader.loadSync(PROTO_PATH, {
+    keepCase: true,
+    longs: String,
+    enums: String,
+    defaults: true,
+    oneofs: true
+});
+
+const trackingPackage = grpc.loadPackageDefinition(packageDef).tracking;
 
 
-// Chargement du fichier proto
-const packageDef = protoLoader.loadSync(
+// ============================================================
+// ✅ KAFKA CONSUMER — Écoute les nouvelles commandes
+// et crée automatiquement un suivi pour chacune
+// ============================================================
 
-    PROTO_PATH,
+// Création connexion Kafka
+const kafka = new Kafka({
+    // Nom du client Kafka
+    clientId: "tracking-service",
+    // Adresse broker Kafka
+    brokers: ["localhost:9092"],
+});
 
-    {
-        keepCase: true,
+// Consumer = écouteur de messages
+const consumer = kafka.consumer({
+    // Groupe consommateurs Kafka (différent de delivery-group)
+    groupId: "tracking-group"
+});
 
-        longs: String,
+// Cette fonction écoute le topic order-topic et crée un suivi automatiquement
+async function runKafka() {
+    try {
+        // Connexion au broker Kafka
+        await consumer.connect();
+        console.log("📡 [Kafka] Tracking consumer connecté");
 
-        enums: String,
+        // Abonnement au même topic que le Delivery Service
+        await consumer.subscribe({
+            topic: "order-topic",
+            fromBeginning: true
+        });
 
-        defaults: true,
+        // Démarrage écoute messages
+        await consumer.run({
+            // Fonction exécutée à chaque message reçu
+            eachMessage: async ({ message }) => {
+                // Décodage du message JSON
+                const order = JSON.parse(message.value.toString());
 
-        oneofs: true
+                // On ignore les événements de mise à jour (ORDER_UPDATED)
+                // On ne traite que les créations de commande (pas d'événement = nouvelle commande)
+                if (order.event === "ORDER_UPDATED") {
+                    console.log(
+                        "ℹ️  [Kafka] Événement ORDER_UPDATED ignoré pour commande:",
+                        order.id
+                    );
+                    return;
+                }
+
+                // Vérifie si un suivi automatique existe déjà pour cette commande
+                const existing = db
+                    .prepare(
+                        `SELECT * FROM tracks
+                         WHERE order_id = ?
+                         AND id LIKE 'TRK-AUTO-%'`
+                    )
+                    .get(order.id);
+
+                // Suivi déjà créé → on ne crée pas de doublon
+                if (existing) {
+                    console.log(
+                        "⚠️  [Kafka] Suivi auto déjà existant pour commande:",
+                        order.id
+                    );
+                    return;
+                }
+
+                console.log(
+                    "📥 [Kafka] Nouvelle commande reçue, création suivi automatique:",
+                    order.id
+                );
+
+                // Génération de l'ID suivi automatique
+                const autoId = "TRK-AUTO-" + getNextId();
+
+                // Objet suivi créé automatiquement
+                const autoTrack = {
+                    id: autoId,
+                    order_id: order.id,
+                    location: "Entrepôt central",   // Position initiale par défaut
+                    status: "en cours",              // Statut initial
+                };
+
+                // Insertion en base SQLite
+                db.prepare(`
+                    INSERT OR IGNORE INTO tracks
+                    (id, order_id, location, status)
+                    VALUES (?, ?, ?, ?)
+                `).run(
+                    autoTrack.id,
+                    autoTrack.order_id,
+                    autoTrack.location,
+                    autoTrack.status
+                );
+
+                console.log(
+                    "✅ [Kafka] Suivi auto créé:",
+                    autoTrack.id,
+                    "pour commande #" + order.id
+                );
+            },
+        });
+
+    } catch (err) {
+        // Kafka facultatif : si non disponible, le service gRPC fonctionne quand même
+        console.log(
+            "⚠️  [Kafka] Non détecté, le service continue sans consumer:",
+            err.message
+        );
     }
-);
+}
 
 
-// Extraction package tracking
-const trackingPackage = grpc
-    .loadPackageDefinition(packageDef)
-    .tracking;
+// ============================================================
+// MÉTHODES gRPC
+// ============================================================
 
-// TRACK ORDER Créer un nouveau suivi colis
-
+// 1. TrackOrder — Créer un suivi manuellement via gRPC
 function TrackOrder(call, callback) {
-    // DONNÉES REÇUES
     const { order_id } = call.request;
-    // GÉNÉRATION ID
-
     const id = "TRK-" + getNextId();
-    // OBJET TRACKING
 
     const track = {
         id,
         order_id,
-        // Position initiale
         location: "Entrepôt central",
         status: "en cours",
     };
-    // INSERTION SQLITE
- 
-    db.prepare(
 
-        `
-        INSERT INTO tracks
-        (id, order_id, location, status)
+    db.prepare(`
+        INSERT INTO tracks (id, order_id, location, status)
         VALUES (?, ?, ?, ?)
-        `
-    ).run(
+    `).run(track.id, track.order_id, track.location, track.status);
 
-        track.id,
-        track.order_id,
-        track.location,
-        track.status
-    );
-    // LOG SUCCÈS
-
-    console.log(
-
-        "📍 [gRPC] Suivi créé pour commande:",
-
-        order_id
-    );
-
-
-    // Retour suivi créé
+    console.log("📍 [gRPC] Suivi créé pour commande :", order_id);
     callback(null, track);
 }
-// Voir tous les suivis
 
+// 2. GetAllTracks — Récupérer tous les suivis
 function GetAllTracks(call, callback) {
-    // LECTURE SQLITE
-
-    const tracks = db
-        .prepare(
-
-            "SELECT * FROM tracks"
-        )
-        .all();
-    // LOG TOTAL
-
-    console.log(
-
-        "📍 [gRPC] Nombre suivis:",
-
-        tracks.length
-    );
-    // RETOUR RÉSULTAT
-    callback(null, {
-
-        tracks
-    });
+    const tracks = db.prepare("SELECT * FROM tracks").all();
+    console.log("📍 [gRPC] Nombre total de suivis :", tracks.length);
+    callback(null, { tracks });
 }
-// Modifier position et statut
 
+// 3. UpdateLocation — Mettre à jour la position et le statut d'un suivi
 function UpdateLocation(call, callback) {
-
-    // PARAMÈTRES REÇUS
     const { id, location, status } = call.request;
 
-    // RECHERCHE SUIVi
-    const existing = db
-        .prepare(
-
-            "SELECT * FROM tracks WHERE id = ?"
-        )
-        .get(id);
-    // SUIVI INTROUVABLE
+    // Vérification existence du suivi
+    const existing = db.prepare("SELECT * FROM tracks WHERE id = ?").get(id);
 
     if (!existing) {
-
         return callback({
-
             code: grpc.status.NOT_FOUND,
-
             message: "Suivi non trouvé",
         });
     }
-    // MISE À JOUR SQLITE
-    db.prepare(
 
-        `
+    // Mise à jour SQLite
+    db.prepare(`
         UPDATE tracks
         SET location = ?, status = ?
         WHERE id = ?
-        `
-    ).run(
-
-        // Nouvelle position
+    `).run(
         location,
-
-        // Nouveau statut
-        // Sinon ancien statut
+        // Garde l'ancien statut si aucun nouveau statut fourni
         status || existing.status,
         id
     );
-    // RELECTURE DONNÉES
-    const updated = db
-        .prepare(
 
-            "SELECT * FROM tracks WHERE id = ?"
-        )
-        .get(id);
-    // LOG SUCCÈS
-    console.log(
+    // Relecture pour retourner les données à jour
+    const updated = db.prepare("SELECT * FROM tracks WHERE id = ?").get(id);
 
-        "✅ [gRPC] Position mise à jour:",
-
-        id,
-
-        "->",
-
-        location
-    );
-
-
-    // Retour données mises à jour
+    console.log("✅ [gRPC] Position mise à jour pour :", id, "->", location);
     callback(null, updated);
 }
-// Création serveur gRPC
+
+
+// ============================================================
+// DÉMARRAGE DU SERVEUR gRPC
+// ============================================================
+
 const server = new grpc.Server();
-// ENREGISTREMENT SERVICES
-server.addService(
 
-    trackingPackage.TrackingService.service,
+// Enregistrement des méthodes gRPC
+server.addService(trackingPackage.TrackingService.service, {
+    TrackOrder,
+    GetAllTracks,
+    UpdateLocation,
+});
 
-    {
-        TrackOrder,
-        GetAllTracks,
-        UpdateLocation,
-    }
-);
-// Démarrage serveur port 50053
 server.bindAsync(
-
-    // Adresse réseau
     "0.0.0.0:50053",
-
-    // Pas de SSL
     grpc.ServerCredentials.createInsecure(),
-
-
-    // Callback démarrage
-    (err, port) => {
+    // Callback exécuté au démarrage
+    async (err, port) => {
         if (err) {
-
-            console.error(
-
-                "❌ Erreur démarrage:",
-
-                err
-            );
-
+            console.error("❌ Erreur de démarrage du serveur :", err);
             return;
         }
-        // LOG SUCCÈS
-        console.log(
+        console.log(`📍 Tracking Service actif sur le port ${port}`);
+        console.log(`💾 Base de données SQLite connectée : tracking.db`);
 
-            `📍 Tracking Service actif sur port ${port}`
-        );
-
-        console.log(
-
-            `💾 SQLite DB : tracking.db`
-        );
-
-        console.log(
-
-            "📡 Service utilise uniquement gRPC"
-        );
+        // ✅ Démarrage du consumer Kafka après le serveur gRPC
+        await runKafka();
     }
 );
-
-// Ce microservice permet :
-//
-// 1. Créer un suivi colis
-// 2. Voir tous les suivis
-// 3. Modifier position colis
-// 4. Modifier statut livraison
-// 5. Stocker les suivis dans SQLite
-// 6. Communiquer avec la Gateway via gRPC
-//
-// Exemple:
-//
-// Commande créée
-// ↓
-// Tracking Service crée :
-//
-// TRK-1
-// Position : Entrepôt central
-// Statut   : en cours
-//
-// Ensuite le livreur peut mettre à jour :
-//
-// Position : Tunis
-// Statut   : en livraison
-//
-// Puis :
-//
-// Position : Chez client
-// Statut   : livré
-//
-// Ce service joue le rôle du système
-// de suivi en temps réel des colis.

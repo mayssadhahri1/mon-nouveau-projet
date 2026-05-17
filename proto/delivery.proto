@@ -1,90 +1,47 @@
-// ============================================================
-// DELIVERY.PROTO — Contrat de communication du service livraisons
-//
-// Un fichier .proto = un contrat écrit entre services.
-// Il dit : "voilà les fonctions disponibles et les données
-// qu'on peut s'envoyer". Tous les services qui veulent
-// communiquer avec le Delivery Service doivent respecter ce contrat.
-// ============================================================
-
-// On utilise la version 3 de Protocol Buffers (le langage des fichiers .proto)
 syntax = "proto3";
 
-// Le nom du package = l'espace de noms
-// Ça évite les conflits si deux services ont des messages avec le même nom
-// On y accède dans le code JS avec : grpc.loadPackageDefinition(...).delivery
 package delivery;
 
-
-// ========================
-// SERVICE — Les fonctions disponibles
-// C'est comme une liste de méthodes qu'on peut appeler à distance
-// rpc = "Remote Procedure Call" = appel de fonction à distance
-// ========================
-
 service DeliveryService {
-
-    // Créer/assigner une livraison à une commande
-    // Reçoit : DeliveryRequest (order_id + address)
-    // Renvoie : DeliveryResponse (la livraison créée)
-    rpc AssignDelivery (DeliveryRequest) returns (DeliveryResponse);
-
-    // Voir une livraison par son identifiant
-    // Reçoit : DeliveryId (juste l'id)
-    // Renvoie : DeliveryResponse (la livraison trouvée)
-    rpc GetDelivery (DeliveryId) returns (DeliveryResponse);
-
-    // Voir toutes les livraisons
-    // Reçoit : Empty (rien du tout, pas besoin de paramètre)
-    // Renvoie : DeliveryList (un tableau de livraisons)
-    rpc GetDeliveries (Empty) returns (DeliveryList);
-
-    // Modifier le statut d'une livraison
-    // Reçoit : UpdateStatusRequest (id + nouveau statut)
-    // Renvoie : DeliveryResponse (la livraison mise à jour)
-    rpc UpdateDeliveryStatus (UpdateStatusRequest) returns (DeliveryResponse);
+  rpc AssignDelivery (AssignRequest) returns (DeliveryResponse);
+  rpc GetDelivery (GetRequest) returns (DeliveryResponse);
+  rpc GetDeliveries (Empty) returns (DeliveryListResponse);
+  rpc UpdateDeliveryStatus (UpdateStatusRequest) returns (DeliveryResponse);
+  rpc GetOrders (Empty) returns (OrderListResponse); 
 }
 
-
-// ========================
-// MESSAGES — Les structures de données échangées
-// Chaque "message" = un objet avec ses champs
-// Le numéro après "=" (1, 2, 3...) = position du champ dans le message binaire
-// (c'est pour l'encodage interne, pas important à retenir)
-// ========================
-
-// Données envoyées pour créer une livraison
-message DeliveryRequest {
-    int32 order_id = 1;  // numéro de la commande (entier 32 bits)
-    string address = 2;  // adresse de livraison (texte)
+message AssignRequest {
+  int32 order_id = 1;
+  string address = 2;
 }
 
-// Données envoyées pour chercher une livraison par son id
-message DeliveryId {
-    string id = 1;  // identifiant de la livraison (ex: "DEL-3")
+message GetRequest {
+  string id = 1;
 }
 
-// Données renvoyées quand on retourne une livraison
-// C'est la "forme" complète d'une livraison
-message DeliveryResponse {
-    string id = 1;        // identifiant unique (ex: "DEL-3")
-    int32 order_id = 2;   // numéro de la commande liée
-    string address = 3;   // adresse de livraison
-    string status = 4;    // statut actuel (ex: "assigned", "en cours", "livré")
-}
-
-// Données renvoyées quand on retourne PLUSIEURS livraisons
-// "repeated" = c'est un tableau (peut contenir 0, 1 ou plusieurs éléments)
-message DeliveryList {
-    repeated DeliveryResponse deliveries = 1;  // tableau de livraisons
-}
-
-// Données envoyées pour modifier le statut d'une livraison
-message UpdateStatusRequest {
-    string id = 1;      // identifiant de la livraison à modifier
-    string status = 2;  // nouveau statut à appliquer
-}
-
-// Message vide — utilisé quand une fonction n'a besoin d'aucun paramètre
-// (ex: GetDeliveries n'a besoin de rien pour lister toutes les livraisons)
 message Empty {}
+
+message DeliveryResponse {
+  string id = 1;
+  int32 order_id = 2;
+  string address = 3;
+  string status = 4;
+}
+
+message DeliveryListResponse {
+  repeated DeliveryResponse deliveries = 1;
+}
+
+message UpdateStatusRequest {
+  string id = 1;
+  string status = 2;
+}
+
+// Messages ajoutés pour structurer la liste des commandes
+message OrderResponse {
+  int32 id = 1;
+}
+
+message OrderListResponse {
+  repeated OrderResponse orders = 1;
+}

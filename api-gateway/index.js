@@ -1,5 +1,4 @@
-
-// Point d’entrée principal entre le frontend et les microservices
+// Point d'entrée principal entre le frontend et les microservices
 
 const express = require("express");
 const cors = require("cors");
@@ -17,22 +16,18 @@ const PORT = 3000;
 // ========================
 
 const protoOptions = {
-
-    // Conserve les noms des champs tels qu’ils sont
+    // Conserve les noms des champs tels qu'ils sont
     keepCase: true,
-
     // Convertit les nombres longs en String
     longs: String,
-
     // Convertit les enums en String
     enums: String,
     defaults: true,
-
     // Support des champs oneof
     oneofs: true
 };
 
-// Permet au frontend d’accéder au backend
+// Permet au frontend d'accéder au backend
 app.use(cors());
 // Transforme automatiquement le body reçu en objet JavaScript
 app.use((req, res, next) => {
@@ -44,25 +39,19 @@ app.use((req, res, next) => {
 
 // Cette fonction redirige les requêtes vers le service auth
 function forwardToAuth(req, res, path) {
-
     // Conversion du body en JSON
     const body = JSON.stringify(req.body);
 
     // Configuration de la requête HTTP
     const options = {
-
         // Adresse du service auth
         hostname: "127.0.0.1",
-
         // Port du auth-service
         port: 4001,
-
         // Route cible
         path,
-
         // Méthode HTTP
         method: "POST",
-
         // Headers HTTP
         headers: {
             "Content-Type": "application/json",
@@ -72,7 +61,6 @@ function forwardToAuth(req, res, path) {
 
     // Création de la requête proxy
     const proxyReq = http.request(options, (proxyRes) => {
-
         // Variable qui stocke la réponse
         let data = "";
 
@@ -83,14 +71,10 @@ function forwardToAuth(req, res, path) {
 
         // Fin de la réponse
         proxyRes.on("end", () => {
-
             try {
-
                 // Retourne la réponse du auth-service
                 res.status(proxyRes.statusCode).json(JSON.parse(data));
-
             } catch {
-
                 // Gestion erreur JSON
                 res.status(502).json({
                     error: "Réponse invalide de l'auth-service"
@@ -101,7 +85,6 @@ function forwardToAuth(req, res, path) {
 
     // Gestion erreur connexion auth-service
     proxyReq.on("error", () => {
-
         res.status(503).json({
             error: "Auth service indisponible"
         });
@@ -109,7 +92,6 @@ function forwardToAuth(req, res, path) {
 
     // Envoi du body
     proxyReq.write(body);
-
     // Fin de requête
     proxyReq.end();
 }
@@ -119,25 +101,20 @@ function forwardToAuth(req, res, path) {
 // ROUTES AUTHENTIFICATION
 // ========================
 
-
 // Route inscription utilisateur
 app.post("/auth/register", (req, res) =>
-
     forwardToAuth(req, res, "/register")
 );
 
-
 // Route connexion utilisateur
 app.post("/auth/login", (req, res) =>
-
     forwardToAuth(req, res, "/login")
 );
 
 
 // ============================================================
-// 3. CONNEXIONS AUX MICROSERVICES gRPC
+// CONNEXIONS AUX MICROSERVICES gRPC
 // ============================================================
-
 
 // ========================
 // SERVICE COMMANDES
@@ -156,7 +133,6 @@ const orderClient = new (
     .OrderService
 )(
     "127.0.0.1:50051",
-
     grpc.credentials.createInsecure()
 );
 
@@ -178,7 +154,6 @@ const deliveryClient = new (
     .DeliveryService
 )(
     "127.0.0.1:50052",
-
     grpc.credentials.createInsecure()
 );
 
@@ -200,58 +175,80 @@ const trackingClient = new (
     .TrackingService
 )(
     "127.0.0.1:50053",
-
     grpc.credentials.createInsecure()
 );
 
 
 // ============================================================
-// 4. ROUTES REST — COMMANDES
+// ROUTES REST — COMMANDES
 // ============================================================
-
 
 // ========================
 // CRÉER UNE COMMANDE
 // ========================
-
 app.post("/orders", (req, res) => {
-
-    // Récupération des données envoyées
     const { product, quantity } = req.body;
 
-    // Appel du microservice gRPC
     orderClient.CreateOrder(
-
         {
             product,
-
             quantity: parseInt(quantity)
         },
-
-        // Callback réponse
         (err, response) => {
-
-            // Gestion erreur
-            if (err)
+            if (err) {
                 return res.status(500).json({
                     error: err.message
                 });
+            }
 
-            // Retourne la réponse
-            res.json(response);
+            // On extrait l'identifiant, peu importe s'il s'appelle id ou order_id
+            const finalId = response.id || response.order_id;
+
+            // On renvoie un objet complet pour satisfaire le Frontend ET Kafka
+            res.json({
+                ...response,
+                id: finalId,
+                order_id: finalId
+            });
         }
     );
 });
 
+// ========================
+// MODIFIER POSITION ET STATUT TRACKING
+// ========================
+app.put("/track/:id", (req, res) => {
+    const { id } = req.params;
+    const { location, status } = req.body;
+
+    // Appel du microservice gRPC TrackingService
+    trackingClient.UpdateLocation(
+        {
+            id,
+            location,
+            status
+        },
+        (err, response) => {
+            if (err) {
+                // Si le service gRPC renvoie NOT_FOUND (code 5)
+                if (err.code === grpc.status.NOT_FOUND) {
+                    return res.status(404).json({ error: "Suivi non trouvé" });
+                }
+                return res.status(500).json({ error: err.message });
+            }
+
+            // Retourne le tracking mis à jour au Frontend
+            res.json(response);
+        }
+    );
+});
 
 // ========================
 // RÉCUPÉRER TOUTES LES COMMANDES
 // ========================
 
 app.get("/orders", (req, res) => {
-
     orderClient.GetOrders({}, (err, response) => {
-
         if (err)
             return res.status(500).json([]);
 
@@ -266,15 +263,11 @@ app.get("/orders", (req, res) => {
 // ========================
 
 app.get("/orders/:id", (req, res) => {
-
     orderClient.GetOrder(
-
         {
             id: parseInt(req.params.id)
         },
-
         (err, response) => {
-
             if (err)
                 return res.status(404).json({
                     error: "Commande non trouvée"
@@ -291,19 +284,15 @@ app.get("/orders/:id", (req, res) => {
 // ========================
 
 app.put("/orders/:id", (req, res) => {
-
     // Nouveau statut
     const { status } = req.body;
 
     orderClient.UpdateOrder(
-
         {
             id: parseInt(req.params.id),
             status
         },
-
         (err, response) => {
-
             if (err)
                 return res.status(500).json({
                     error: err.message
@@ -320,15 +309,11 @@ app.put("/orders/:id", (req, res) => {
 // ========================
 
 app.delete("/orders/:id", (req, res) => {
-
     orderClient.DeleteOrder(
-
         {
             id: parseInt(req.params.id)
         },
-
         (err, response) => {
-
             if (err)
                 return res.status(500).json({
                     error: err.message
@@ -341,27 +326,22 @@ app.delete("/orders/:id", (req, res) => {
 
 
 // ============================================================
-// 5. ROUTES REST — LIVRAISONS
+// ROUTES REST — LIVRAISONS
 // ============================================================
-
 
 // ========================
 // ASSIGNER UNE LIVRAISON
 // ========================
 
 app.post("/delivery", (req, res) => {
-
     const { order_id, address } = req.body;
 
     deliveryClient.AssignDelivery(
-
         {
             order_id: parseInt(order_id),
             address
         },
-
         (err, response) => {
-
             if (err)
                 return res.status(500).json({
                     error: err.message
@@ -378,9 +358,7 @@ app.post("/delivery", (req, res) => {
 // ========================
 
 app.get("/delivery", (req, res) => {
-
     deliveryClient.GetDeliveries({}, (err, response) => {
-
         if (err)
             return res.status(500).json([]);
 
@@ -390,26 +368,21 @@ app.get("/delivery", (req, res) => {
 
 
 // ============================================================
-// 6. ROUTES REST — TRACKING
+// ROUTES REST — TRACKING
 // ============================================================
-
 
 // ========================
 // CRÉER UN TRACKING
 // ========================
 
 app.post("/track", (req, res) => {
-
     const { order_id } = req.body;
 
     trackingClient.TrackOrder(
-
         {
             order_id: parseInt(order_id)
         },
-
         (err, response) => {
-
             if (err)
                 return res.status(500).json({
                     error: err.message
@@ -426,9 +399,7 @@ app.post("/track", (req, res) => {
 // ========================
 
 app.get("/track", (req, res) => {
-
     trackingClient.GetAllTracks({}, (err, response) => {
-
         if (err)
             return res.status(500).json([]);
 
@@ -438,76 +409,61 @@ app.get("/track", (req, res) => {
 
 
 // ============================================================
-// 7. GRAPHQL
+// GRAPHQL — SCHÉMA
 // ============================================================
-
 
 // Définition des types GraphQL
 const typeDefs = gql`
-
-    // ========================
-    // TYPE COMMANDE
-    // ========================
+    # ========================
+    # TYPE COMMANDE
+    # ========================
     type Order {
-
         id: Int
-
         product: String
-
         quantity: Int
-
         status: String
     }
 
-    // ========================
-    // TYPE LIVRAISON
-    // ========================
+    # ========================
+    # TYPE LIVRAISON
+    # ========================
     type Delivery {
-
         id: String
-
         order_id: Int
-
         address: String
-
         status: String
     }
 
-    // ========================
-    // TYPE TRACKING
-    // ========================
+    # ========================
+    # TYPE TRACKING
+    # ========================
     type Track {
-
         id: String
-
         order_id: Int
-
         location: String
-
         status: String
     }
 
-    // ========================
-    // REQUÊTES GRAPHQL
-    // ========================
+    # ========================
+    # REQUÊTES GRAPHQL
+    # ========================
     type Query {
-
+        # Récupérer une commande par ID
         getOrder(id: Int!): Order
-
+        # Récupérer toutes les commandes
         getOrders: [Order]
-
+        # Récupérer une livraison par ID
         getDelivery(id: String!): Delivery
-
+        # Récupérer toutes les livraisons
         getDeliveries: [Delivery]
-
+        # Récupérer tous les suivis
         getAllTracks: [Track]
     }
 
-    // ========================
-    // MUTATIONS GRAPHQL
-    // ========================
+    # ========================
+    # MUTATIONS GRAPHQL
+    # ========================
     type Mutation {
-
         createOrder(
             product: String!,
             quantity: Int!
@@ -536,50 +492,121 @@ const typeDefs = gql`
 
 
 // ============================================================
-// RESOLVERS GRAPHQL
+// GRAPHQL — RESOLVERS (COMPLETS)
 // ============================================================
 
 const resolvers = {
 
+    // ========================
+    // QUERIES
+    // ========================
     Query: {
 
-        // Récupérer une commande
+        // Récupérer une commande par ID
         getOrder: (_, { id }) =>
-
             new Promise((resolve, reject) => {
-
                 orderClient.GetOrder(
-
                     { id },
+                    (err, data) => err ? reject(err) : resolve(data)
+                );
+            }),
 
-                    (err, data) =>
+        // ✅ AJOUTÉ — Récupérer toutes les commandes
+        getOrders: () =>
+            new Promise((resolve, reject) => {
+                orderClient.GetOrders(
+                    {},
+                    (err, data) => {
+                        if (err) return reject(err);
+                        // Retourne le tableau orders contenu dans la réponse gRPC
+                        resolve(data.orders || []);
+                    }
+                );
+            }),
 
-                        err
-                            ? reject(err)
-                            : resolve(data)
+        // ✅ AJOUTÉ — Récupérer une livraison par ID
+        getDelivery: (_, { id }) =>
+            new Promise((resolve, reject) => {
+                deliveryClient.GetDelivery(
+                    { id },
+                    (err, data) => err ? reject(err) : resolve(data)
+                );
+            }),
+
+        // ✅ AJOUTÉ — Récupérer toutes les livraisons
+        getDeliveries: () =>
+            new Promise((resolve, reject) => {
+                deliveryClient.GetDeliveries(
+                    {},
+                    (err, data) => {
+                        if (err) return reject(err);
+                        // Retourne le tableau deliveries contenu dans la réponse gRPC
+                        resolve(data.deliveries || []);
+                    }
+                );
+            }),
+
+        // ✅ AJOUTÉ — Récupérer tous les suivis
+        getAllTracks: () =>
+            new Promise((resolve, reject) => {
+                trackingClient.GetAllTracks(
+                    {},
+                    (err, data) => {
+                        if (err) return reject(err);
+                        // Retourne le tableau tracks contenu dans la réponse gRPC
+                        resolve(data.tracks || []);
+                    }
                 );
             }),
     },
 
+    // ========================
+    // MUTATIONS
+    // ========================
     Mutation: {
 
         // Créer une commande
         createOrder: (_, { product, quantity }) =>
-
             new Promise((resolve, reject) => {
-
                 orderClient.CreateOrder(
+                    { product, quantity },
+                    (err, data) => err ? reject(err) : resolve(data)
+                );
+            }),
 
-                    {
-                        product,
-                        quantity
-                    },
+        // Assigner une livraison
+        assignDelivery: (_, { order_id, address }) =>
+            new Promise((resolve, reject) => {
+                deliveryClient.AssignDelivery(
+                    { order_id, address },
+                    (err, data) => err ? reject(err) : resolve(data)
+                );
+            }),
 
-                    (err, data) =>
+        // Créer un suivi
+        trackOrder: (_, { order_id }) =>
+            new Promise((resolve, reject) => {
+                trackingClient.TrackOrder(
+                    { order_id },
+                    (err, data) => err ? reject(err) : resolve(data)
+                );
+            }),
 
-                        err
-                            ? reject(err)
-                            : resolve(data)
+        // Modifier statut commande
+        updateOrderStatus: (_, { id, status }) =>
+            new Promise((resolve, reject) => {
+                orderClient.UpdateOrder(
+                    { id, status },
+                    (err, data) => err ? reject(err) : resolve(data)
+                );
+            }),
+
+        // Modifier statut livraison
+        updateDeliveryStatus: (_, { id, status }) =>
+            new Promise((resolve, reject) => {
+                deliveryClient.UpdateDeliveryStatus(
+                    { id, status },
+                    (err, data) => err ? reject(err) : resolve(data)
                 );
             }),
     },
@@ -587,21 +614,16 @@ const resolvers = {
 
 
 // ============================================================
-// 8. DÉMARRAGE DU SERVEUR
+// DÉMARRAGE DU SERVEUR
 // ============================================================
 
 async function startServer() {
-
     // Création du serveur GraphQL
     const server = new ApolloServer({
-
         typeDefs,
-
         resolvers,
-
         // Autorise introspection GraphQL
         introspection: true,
-
         // Active playground GraphQL
         playground: true,
     });
@@ -614,27 +636,13 @@ async function startServer() {
 
     // Démarrage du serveur Express
     app.listen(PORT, () => {
-
-        console.log(
-            `✅ Gateway REST en ligne : http://localhost:${PORT}`
-        );
-
-        console.log(
-            `🟣 GraphQL disponible : http://localhost:${PORT}/graphql`
-        );
-
-        console.log(
-            `🔐 Auth-service : http://localhost:4001`
-        );
+        console.log(`✅ Gateway REST en ligne : http://localhost:${PORT}`);
+        console.log(`🟣 GraphQL disponible   : http://localhost:${PORT}/graphql`);
+        console.log(`🔐 Auth-service         : http://localhost:4001`);
     });
 }
 
-
 // Lancement du serveur
 startServer().catch((err) => {
-
-    console.error(
-        "❌ Erreur au démarrage :",
-        err
-    );
+    console.error("❌ Erreur au démarrage :", err);
 });

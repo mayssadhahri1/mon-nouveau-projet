@@ -2,7 +2,6 @@
 const grpc = require("@grpc/grpc-js");
 const protoLoader = require("@grpc/proto-loader");
 const Database = require("better-sqlite3");
-// KafkaJS Utilisé pour envoyer des messages Kafka
 const { Kafka } = require("kafkajs");
 const db = new Database("orders.db");
 
@@ -72,9 +71,9 @@ async function sendToKafka(topic, message) {
         });
 
 
-        // ========================
+    
         // LOG SUCCÈS
-        // ========================
+      
 
         console.log(
 
@@ -85,9 +84,9 @@ async function sendToKafka(topic, message) {
 
     } catch (error) {
 
-        // ========================
+
         // ERREUR KAFKA
-        // ========================
+    
 
         console.error(
 
@@ -99,9 +98,8 @@ async function sendToKafka(topic, message) {
 }
 
 
-// ============================================================
 // 3. CHARGEMENT FICHIER PROTO
-// ============================================================
+
 
 
 // Chargement order.proto
@@ -135,9 +133,8 @@ async function CreateOrder(call, callback) {
 
     try {
 
-        // ========================
         // INSERTION SQLITE
-        // ========================
+      
 
         const stmt = db.prepare(
 
@@ -157,9 +154,8 @@ async function CreateOrder(call, callback) {
         );
 
 
-        // ========================
+        
         // OBJET COMMANDE
-        // ========================
 
         const newOrder = {
 
@@ -177,9 +173,7 @@ async function CreateOrder(call, callback) {
         };
 
 
-        // ========================
         // LOG SUCCÈS
-        // ========================
 
         console.log(
 
